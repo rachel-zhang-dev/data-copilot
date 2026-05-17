@@ -39,6 +39,7 @@ flowchart LR
 ```
 
 Full diagram and design notes in [`docs/architecture.md`](docs/architecture.md).
+A line-by-line tour of the source lives in [`docs/code-walkthrough.md`](docs/code-walkthrough.md).
 Major decisions are recorded as [ADRs](docs/decisions/).
 
 ## Tech stack
