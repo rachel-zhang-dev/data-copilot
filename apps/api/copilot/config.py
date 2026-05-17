@@ -2,41 +2,59 @@
 
 We use pydantic-settings so config is type-checked, documented, and
 fails fast at startup if required values are missing.
+
+The `.env` file is located by walking up from this module until we
+find a directory containing `pyproject.toml`. This way the config
+works no matter where the process is launched from (project root,
+`apps/api/`, a notebook, a test runner, etc.).
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _find_project_root() -> Path:
+    """Walk upwards until we find pyproject.toml; fall back to cwd."""
+    here = Path(__file__).resolve()
+    for parent in [here, *here.parents]:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd()
+
+
+_ENV_PATH = _find_project_root() / ".env"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
 
-    # ---------- LLM ----------
+    # ---------- LLM (required) ----------
     deepseek_api_key: str = Field(..., description="DeepSeek API key")
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
 
-    # ---------- Embeddings ----------
-    dashscope_api_key: str = Field(..., description="Alibaba DashScope API key")
+    # ---------- Embeddings (optional until week 3) ----------
+    dashscope_api_key: str | None = None
     embedding_model: str = "text-embedding-v3"
 
-    # ---------- Observability ----------
+    # ---------- Observability (always optional) ----------
     langsmith_api_key: str | None = None
     langsmith_tracing: bool = True
     langsmith_project: str = "data-copilot-dev"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
 
-    # ---------- Database ----------
-    database_url: str = Field(..., description="PostgreSQL connection string")
+    # ---------- Database (optional until week 2) ----------
+    database_url: str | None = None
 
     # ---------- API ----------
     api_host: str = "0.0.0.0"

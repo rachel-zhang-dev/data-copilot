@@ -32,7 +32,7 @@ MANIFEST
 # ===== uv =====
 .venv/
 venv/
-.python-version
+# .python-version is intentionally tracked to pin the project's Python.
 
 # ===== Testing / Coverage =====
 .pytest_cache/
