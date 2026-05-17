@@ -1,0 +1,132 @@
+# Data Copilot
+
+> An enterprise-grade **Text-to-SQL agent** with self-healing, schema-aware retrieval, and full observability.
+> Built with **LangGraph**, **FastAPI**, **Next.js**, and **PostgreSQL + pgvector**.
+
+[![Status](https://img.shields.io/badge/status-WIP-orange.svg)](#roadmap)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+---
+
+## Why this project
+
+Every analytics team has the same bottleneck: **business users wait days for the data team to write ad-hoc SQL**. Modern LLMs can close that gap, but production text-to-SQL is hard — schemas are huge, queries are wrong on the first try, and stakeholders need explanations, not just rows.
+
+`data-copilot` is a portfolio-grade exploration of how to build that system *properly*: not a notebook demo, but a service with retrieval, validation, self-healing, evaluation, and traceable observability.
+
+## Features
+
+- 🧠 **LangGraph state machine** — multi-step reasoning with explicit retry / human-in-the-loop nodes
+- 📚 **Schema-aware RAG** — embeds tables and columns; only the relevant slice of the schema is sent to the LLM
+- 🔧 **Self-healing SQL** — when execution fails, the agent inspects the error and rewrites the query
+- 📊 **Visualisation generation** — model picks chart type and config based on result shape
+- 🔍 **Full observability** — every run traced in [LangSmith](https://smith.langchain.com/)
+- ✅ **Evaluation harness** — fixed eval set + LLM-as-judge + RAGAS metrics, tracked per release
+- 💸 **Cost-aware** — primary LLM is DeepSeek (~10× cheaper than GPT-4o); designed to swap providers via a single env var
+- 🔒 **Safety** — query whitelist, row-level filters, automatic `LIMIT` injection
+
+## Architecture
+
+```mermaid
+flowchart LR
+    UI[Next.js UI] -->|HTTP| API[FastAPI]
+    API --> AG[LangGraph Agent]
+    AG -->|retrieve| VS[(pgvector<br/>schema embeddings)]
+    AG -->|execute| DB[(PostgreSQL<br/>business data)]
+    AG -->|prompt| LLM[DeepSeek / Claude]
+    AG -. trace .-> LS[LangSmith]
+```
+
+Full diagram and design notes in [`docs/architecture.md`](docs/architecture.md).
+Major decisions are recorded as [ADRs](docs/decisions/).
+
+## Tech stack
+
+| Layer | Choice |
+|-------|--------|
+| Agent runtime | **LangGraph** + **LangChain** |
+| LLM | DeepSeek-Chat (primary) · GPT-4o-mini · Claude Sonnet (benchmarked) |
+| Embeddings | DashScope `text-embedding-v3` |
+| Backend | FastAPI · Pydantic v2 · Python 3.11 |
+| Database & vectors | PostgreSQL 16 · `pgvector` |
+| Frontend | Next.js 15 · TypeScript · Tailwind · shadcn/ui |
+| Tooling | `uv` · `ruff` · `mypy` · `pytest` |
+| Observability | LangSmith |
+| Container & deploy | Docker Compose → Fly.io |
+
+## Quick start
+
+```bash
+# 1. Clone and configure
+git clone https://github.com/rachel-zhang-dev/data-copilot.git
+cd data-copilot
+cp .env.example .env  # then fill in your API keys
+
+# 2. Install dependencies (uv = fast package manager)
+uv sync --all-extras
+
+# 3. Boot Postgres
+./scripts/dev.sh up
+
+# 4. Run the API
+./scripts/dev.sh api
+# → http://localhost:8000/docs
+
+# 5. Quick agent ping (no UI needed)
+./scripts/dev.sh ask "Hello, who are you?"
+```
+
+> **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
+
+## Roadmap
+
+| Week | Milestone |
+|------|-----------|
+| 1 ✅ | Project scaffold, environment, hello-world LangGraph node |
+| 2 | Single-table text-to-SQL baseline (no RAG yet) |
+| 3 | Schema retrieval with pgvector (multi-table) |
+| 4 | Refactor to full LangGraph state machine with self-healing |
+| 5 | Multi-turn dialogue + chat history compaction |
+| 6 | Evaluation set (100 queries) + LangSmith dashboards |
+| 7 | Human-in-the-loop confirmation for destructive / expensive queries |
+| 8 | Visualisation generation + insight summaries |
+| 9 | Caching layer · cost report · retries with exponential backoff |
+| 10 | Next.js front-end with streaming responses |
+| 11 | Docker production image · Fly.io deploy · monitoring |
+| 12 | Polish, demo video, blog series, simplify onboarding |
+
+## Project layout
+
+```
+data-copilot/
+├── apps/
+│   ├── api/                # FastAPI + LangGraph backend
+│   │   ├── copilot/        # importable Python package
+│   │   │   ├── agent/      # LangGraph nodes, state, graph builder
+│   │   │   ├── config.py
+│   │   │   ├── llm.py
+│   │   │   └── main.py     # FastAPI app
+│   │   └── tests/
+│   └── web/                # Next.js UI (added in week 10)
+├── data/
+│   └── seed/               # SQL fixtures (Northwind / TPC-H subset)
+├── docs/
+│   ├── architecture.md
+│   └── decisions/          # ADRs — one .md per major decision
+├── scripts/
+│   └── dev.sh              # one-stop local commands
+├── docker-compose.yml      # Postgres + pgvector
+├── pyproject.toml          # managed by uv
+├── .env.example
+├── .gitignore
+└── README.md
+```
+
+## Contributing
+
+This repository is primarily a personal learning project. Issues and PRs are welcome — feel free to file an issue if anything is unclear or broken.
+
+## License
+
+[MIT](LICENSE) © 2026 Rachel Zhang
