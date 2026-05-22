@@ -1,18 +1,35 @@
 """Smoke test for the API health endpoint.
 
-Run with:
+We mock the DB-related lifespan dependencies because they require a
+running Postgres. The integration suite covers the real wiring.
+
+Run with::
+
     uv run pytest -m "not integration"
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
-from copilot.main import app
+
+@pytest.fixture()
+def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """A FastAPI test client where DB lifespan hooks are no-ops."""
+    monkeypatch.setattr("copilot.main.get_engine", lambda: None)
+    monkeypatch.setattr("copilot.main.get_schema_ddl", lambda: "")
+    monkeypatch.setattr("copilot.main.dispose_engine", lambda: None)
+
+    from copilot.main import app
+
+    with TestClient(app) as c:
+        yield c
 
 
-def test_health_endpoint() -> None:
-    with TestClient(app) as client:
-        response = client.get("/health")
+def test_health_endpoint(client: TestClient) -> None:
+    response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "version" in body

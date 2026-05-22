@@ -12,14 +12,17 @@ Reading guide
 * ``app.state.graph``    — the compiled LangGraph agent, built once and reused.
 * ``/health``            — cheap probe for monitoring & uptime checks.
 * ``/ask``               — the only "real" endpoint right now; takes a
-  natural-language question and returns an answer.
+  natural-language question and returns an answer (plus, since week 2,
+  the SQL that was run and the rows that came back).
 """
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +30,9 @@ from pydantic import BaseModel
 
 from copilot.agent import build_graph
 from copilot.config import get_settings
+from copilot.db import dispose_engine, get_engine, get_schema_ddl
+
+log = logging.getLogger(__name__)
 
 
 def _configure_langsmith() -> None:
@@ -51,24 +57,33 @@ def _configure_langsmith() -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup / shutdown hook.
 
-    Anything before ``yield`` runs once at startup; anything after runs
-    at shutdown. We use this to:
+    Startup:
+      1. Configure LangSmith tracing.
+      2. Eagerly build the SQLAlchemy engine and warm the schema cache.
+         Doing this here turns "Postgres is down" into a startup error
+         (visible in logs) instead of a confusing 500 on the first
+         /ask request.
+      3. Build the LangGraph agent once and stash it on ``app.state``.
 
-    1. Configure tracing.
-    2. Build (compile) the LangGraph agent **once** and stash it on
-       ``app.state``. Compiling on every request would waste milliseconds
-       and prevent LangGraph from caching internal structure.
+    Shutdown:
+      * Dispose the connection pool cleanly so Postgres does not log
+        spurious connection-reset warnings.
     """
     _configure_langsmith()
+    get_engine()
+    schema = get_schema_ddl()
+    log.info("schema cache warmed (%d chars)", len(schema))
     app.state.graph = build_graph()
-    yield
-    # Nothing to clean up yet. When we add a DB pool, close it here.
+    try:
+        yield
+    finally:
+        dispose_engine()
 
 
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -89,23 +104,35 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Pydantic models double as: (a) runtime validators for incoming JSON,
 # (b) OpenAPI schema generators for /docs, and (c) static type hints.
-# Defining them as classes — not loose dicts — is what unlocks FastAPI's
-# auto-validation and auto-documentation.
+
 
 class AskRequest(BaseModel):
     question: str
 
 
 class AskResponse(BaseModel):
+    """Response envelope for ``POST /ask``.
+
+    Only ``answer`` is guaranteed populated. The other fields are
+    introspection data — useful for debugging the agent, for the future
+    Next.js UI, and for the evaluation harness. They are ``None`` when
+    the question routes through the chitchat branch.
+    """
+
     answer: str
+    sql: str | None = None
+    rows: list[dict[str, Any]] | None = None
+    row_count: int | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/health")
-async def health() -> dict:
+async def health() -> dict[str, str]:
     """Liveness probe. Cheap, no external calls.
 
     Used by Docker / Kubernetes / load balancers to decide whether the
@@ -121,9 +148,15 @@ async def ask(req: AskRequest) -> AskResponse:
     Flow:
         1. Pull the pre-compiled graph off ``app.state`` (set in ``lifespan``).
         2. Invoke the graph asynchronously — this is the call that may
-           reach out to the LLM, vector store, and database.
-        3. Wrap the answer in a typed response model.
+           reach out to the LLM and the database.
+        3. Wrap the result in a typed response model.
     """
     graph = app.state.graph
     result = await graph.ainvoke({"question": req.question})
-    return AskResponse(answer=result["answer"])
+    return AskResponse(
+        answer=result.get("answer", ""),
+        sql=result.get("sql"),
+        rows=result.get("sql_result"),
+        row_count=result.get("row_count"),
+        error=result.get("error"),
+    )

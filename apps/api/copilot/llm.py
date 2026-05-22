@@ -19,6 +19,7 @@ talking to, which keeps the agent code clean.
 from __future__ import annotations
 
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from copilot.config import get_settings
 
@@ -36,7 +37,7 @@ def get_llm(temperature: float = 0.0, **kwargs: object) -> ChatOpenAI:
     settings = get_settings()
     return ChatOpenAI(
         model=settings.deepseek_model,
-        api_key=settings.deepseek_api_key,
+        api_key=SecretStr(settings.deepseek_api_key),
         base_url=settings.deepseek_base_url,
         temperature=temperature,
         **kwargs,  # type: ignore[arg-type]

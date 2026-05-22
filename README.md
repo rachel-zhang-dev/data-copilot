@@ -76,7 +76,17 @@ uv sync --all-extras
 
 # 5. Quick agent ping (no UI needed)
 ./scripts/dev.sh ask "Hello, who are you?"
+
+# 6. Try a real data question (week 2 onwards)
+./scripts/dev.sh ask "How many customers are there?"
+./scripts/dev.sh ask "List the 5 most expensive products."
+./scripts/dev.sh ask "Which country has the most customers?"
 ```
+
+The `ask` command prints the SQL the agent generated, the rows it
+fetched, and the natural-language answer — useful for debugging the
+graph end-to-end. Unsafe inputs like `"Drop the orders table"` are
+caught by the safety layer (see [ADR 0002](docs/decisions/0002-sql-safety.md)).
 
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
@@ -85,7 +95,7 @@ uv sync --all-extras
 | Week | Milestone |
 |------|-----------|
 | 1 ✅ | Project scaffold, environment, hello-world LangGraph node |
-| 2 | Single-table text-to-SQL baseline (no RAG yet) |
+| 2 ✅ | Single-table text-to-SQL baseline (no RAG yet) |
 | 3 | Schema retrieval with pgvector (multi-table) |
 | 4 | Refactor to full LangGraph state machine with self-healing |
 | 5 | Multi-turn dialogue + chat history compaction |

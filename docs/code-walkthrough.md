@@ -315,7 +315,93 @@ This is the canonical happy path — print it out and pin it to a wall.
 
 ---
 
-## 9. Glossary (so you do not have to Google mid-read)
+## 9. Week 2 — the multi-node graph
+
+Week 1's `echo_node` has been retired. The graph now branches and the
+data path runs a real text-to-SQL pipeline. The wiring is in
+[`agent/graph.py`](../apps/api/copilot/agent/graph.py); each node lives
+in [`agent/nodes.py`](../apps/api/copilot/agent/nodes.py).
+
+### 9.1 The shape
+
+```
+                  classify_intent
+                   /          \
+              chitchat        data
+                |               |
+            small_talk     generate_sql
+                |               |
+                |          validate_sql
+                |          /          \
+                |     invalid         valid
+                |        |              |
+                |   finalize_error  execute_sql
+                |        ^              |
+                |        | db error     |
+                |        +--------------+
+                |                       |
+                |                  summarize_result
+                |                       |
+                +----------+------------+
+                           v
+                          END
+```
+
+### 9.2 New patterns to notice
+
+* 🔑 **`add_conditional_edges`** lets a node return one of several
+  next-node names. Routing decisions live in *plain functions* in
+  `nodes.py` (`route_after_classify`, `route_after_validate`,
+  `route_after_execute`) — easy to unit-test in isolation.
+
+* 🔑 **Error as state, not exception.** Any node that fails sets
+  `state["error"] = "<reason>"` and returns; downstream routers check
+  the field. This makes the failure path identical to the happy path
+  from LangGraph's perspective and lets us add retries / human review
+  later without restructuring nodes.
+
+* 🔑 **Policy and I/O live in separate modules.** `sql_safety.py` is
+  pure (parse, validate, rewrite, raise) and trivially testable;
+  `db.py` does nothing but talk to Postgres; `nodes.py` glues them
+  together. Nothing in the safety module knows about LangGraph; nothing
+  in `db.py` knows about the LLM.
+
+* ⚠️ **Schema is pulled lazily.** `generate_sql_node` calls
+  `get_schema_ddl()` only if the state does not already contain one.
+  This is what lets unit tests inject a tiny schema string without
+  touching Postgres.
+
+### 9.3 The end-to-end happy path (data question)
+
+```
+POST /ask { "question": "How many customers?" }
+  │
+  ▼
+classify_intent ──► intent = "data"
+  │
+  ▼
+generate_sql   ──► sql = "SELECT COUNT(*) FROM customers"
+  │
+  ▼
+validate_sql   ──► sql = "SELECT COUNT(*) FROM customers LIMIT 100"
+  │
+  ▼
+execute_sql    ──► sql_result = [{"count": 91}], row_count = 1
+  │
+  ▼
+summarize_result ──► answer = "There are 91 customers in total."
+  │
+  ▼
+END  ──► {"answer": "...", "sql": "...", "rows": [...], "row_count": 1}
+```
+
+The HTTP response carries the SQL and rows alongside the answer
+(`AskResponse` in `main.py`), so the eventual Next.js UI can show
+both a chat bubble and a data table.
+
+---
+
+## 10. Glossary (so you do not have to Google mid-read)
 
 | Term | One-liner |
 |------|----------|

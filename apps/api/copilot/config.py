@@ -53,8 +53,24 @@ class Settings(BaseSettings):
     langsmith_project: str = "data-copilot-dev"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
 
-    # ---------- Database (optional until week 2) ----------
-    database_url: str | None = None
+    # ---------- Database (required from week 2 onwards) ----------
+    database_url: str = Field(
+        ...,
+        description=(
+            "PostgreSQL connection string, e.g. "
+            "postgresql://copilot:copilot_dev_pwd@localhost:5432/northwind. "
+            "Required since week 2 — start the DB with ./scripts/dev.sh up."
+        ),
+    )
+    sql_max_rows: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Cap injected into every LLM-generated SELECT when the model "
+            "forgets a LIMIT. Keeps runaway queries from flooding the agent."
+        ),
+    )
 
     # ---------- API ----------
     api_host: str = "0.0.0.0"
