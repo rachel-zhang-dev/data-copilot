@@ -100,6 +100,7 @@ flowchart TB
 | **Multi-turn dialogue** | ✅ | `conversation_id` keys a thread; LangGraph `PostgresSaver` persists state across calls (see [ADR 0005](decisions/0005-conversation-persistence.md)) |
 | **History compaction** | ✅ | `compact_history_node` summarises older turns when dialogue tokens exceed threshold |
 | Eval harness | ⏳ week 6 | will A/B retrieval + retry + dialogue policies on a fixed question set |
+| Security & multi-tenancy | ⏳ week 13 | JWT auth, RBAC, Postgres-enforced RLS, audit log. Design preview in [ADR 0006](decisions/0006-security-and-multi-tenancy.md) |
 
 ## Why LangGraph rather than plain LangChain?
 

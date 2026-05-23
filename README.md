@@ -169,6 +169,7 @@ budgets reset between turns so a follow-up always starts fresh.
 | 10 | Next.js front-end with streaming responses |
 | 11 | Docker production image · Fly.io deploy · monitoring |
 | 12 | Polish, demo video, blog series, simplify onboarding |
+| 13 | Security & multi-tenancy: JWT, RBAC, Postgres-enforced RLS, audit log (see [ADR 0006](docs/decisions/0006-security-and-multi-tenancy.md)) |
 
 ## Project layout
 
