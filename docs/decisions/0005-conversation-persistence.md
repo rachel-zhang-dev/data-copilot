@@ -41,6 +41,47 @@ filters attempts by the current turn, so a follow-up question always
 starts with a fresh self-healing budget regardless of what happened in
 prior turns of the same conversation.
 
+### 4. Concurrent writes to the same conversation are serialised by a Postgres advisory lock
+
+LangGraph's checkpoint write is last-writer-wins: two `/ask` calls
+that interleave on the same `thread_id` both read the same baseline
+state, both compute on top of it, both INSERT a new checkpoint, and
+the later commit silently wipes the earlier turn's contributions to
+`dialogue` and `attempts`. The window is small (LLM calls take ≈5-10 s)
+but real — a double-click on a UI, a network retry, or two clients
+sharing a thread_id will all hit it.
+
+We acquire `pg_advisory_lock(hash(thread_id))` for the duration of
+each `graph.ainvoke` and release it afterwards. Implementation in
+[`apps/api/copilot/checkpointer.py`](../../apps/api/copilot/checkpointer.py)
+(`conversation_lock` async context manager). Different conversations
+hash to different lock keys and stay fully parallel; only same-thread
+calls serialise. The lock is session-scoped (auto-released if the
+holding connection dies) rather than transaction-scoped because the
+graph invocation spans many short transactions managed by
+`AsyncPostgresSaver`.
+
+### 5. The `messages` state field is declared but no longer written
+
+LangChain's `add_messages` reducer makes it easy to accumulate every
+LLM `AIMessage` into a single `messages: list` for retrospection. We
+used to do exactly that in four nodes (classify_intent, small_talk,
+generate_sql, summarize_result). Two problems made it untenable:
+
+* **No reader.** Nothing in the codebase consumes `state.messages` —
+  the user-facing transcript is `dialogue`, the per-turn attempt
+  trail is `attempts`, and LangSmith captures each LLM call as its
+  own child run. The list was write-only.
+* **Unbounded growth, persisted.** With the week-5 checkpointer
+  every node return is serialised into Postgres. `messages` grew
+  linearly with turn count (≈3-4 entries per turn, more with
+  retries) and the row size grew with it. Compaction does not touch
+  this field.
+
+We keep the field declared so any future external tool node could
+still append (e.g. a tool-calling agent reading the message log to
+decide its next step), but our own nodes no longer return it.
+
 ## Alternatives considered
 
 ### Stateless server, history sent by client

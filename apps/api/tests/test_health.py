@@ -16,15 +16,26 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """A FastAPI test client where DB lifespan hooks are no-ops."""
+    """A FastAPI test client where DB lifespan hooks are no-ops.
+
+    The checkpointer helpers became ``async`` in week 5 (to match
+    LangGraph's ``ainvoke`` dispatch), so the no-op replacements must
+    themselves be coroutines — patching with a plain lambda would
+    cause ``await None`` and a TypeError during app startup.
+    """
     monkeypatch.setattr("copilot.main.get_engine", lambda: None)
     monkeypatch.setattr("copilot.main.get_schema_ddl", lambda: "")
     monkeypatch.setattr("copilot.main.dispose_engine", lambda: None)
-    # Week 5: checkpointer also touches Postgres; stub it out for the
-    # health-endpoint smoke test which has no business needing a DB.
-    monkeypatch.setattr("copilot.main.setup_checkpointer", lambda: None)
-    monkeypatch.setattr("copilot.main.dispose_checkpointer", lambda: None)
-    monkeypatch.setattr("copilot.main.get_checkpointer", lambda: None)
+
+    async def _async_noop() -> None:
+        return None
+
+    async def _async_none() -> None:
+        return None
+
+    monkeypatch.setattr("copilot.main.setup_checkpointer", _async_noop)
+    monkeypatch.setattr("copilot.main.dispose_checkpointer", _async_noop)
+    monkeypatch.setattr("copilot.main.get_checkpointer", _async_none)
 
     from copilot.main import app
 

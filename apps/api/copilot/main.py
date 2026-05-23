@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from copilot.agent import build_graph
 from copilot.checkpointer import (
+    conversation_lock,
     dispose_checkpointer,
     get_checkpointer,
     setup_checkpointer,
@@ -82,12 +83,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     get_engine()
     schema = get_schema_ddl()
     log.info("schema cache warmed (%d chars)", len(schema))
-    setup_checkpointer()
-    app.state.graph = build_graph(checkpointer=get_checkpointer())
+    await setup_checkpointer()
+    app.state.graph = build_graph(checkpointer=await get_checkpointer())
     try:
         yield
     finally:
-        dispose_checkpointer()
+        await dispose_checkpointer()
         dispose_engine()
 
 
@@ -185,13 +186,33 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     # LangGraph keys persistence on ``thread_id``; we treat
     # conversation_id and thread_id as synonyms.
     config = {"configurable": {"thread_id": conversation_id}}
-    result = await graph.ainvoke({"question": req.question}, config=config)
+
+    # Serialise concurrent writes to the same conversation_id. Without
+    # this guard, two near-simultaneous /ask calls on the same thread
+    # both read the same baseline and the later commit silently
+    # overwrites the earlier turn's diff. Different conversation_ids
+    # use different lock keys and stay fully parallel.
+    async with conversation_lock(conversation_id):
+        result = await graph.ainvoke({"question": req.question}, config=config)
 
     failures = result.get("attempts") or []
     turn_idx = result.get("turn_index") or 1
     # Count failures recorded during THIS turn only.
     this_turn_failures = [f for f in failures if f.get("turn_idx", 0) == turn_idx]
-    attempts_count = (len(this_turn_failures) + 1) if result.get("sql") else 0
+    # Count total SQL-generation calls in this turn:
+    #   * chitchat path never generated SQL                     -> 0
+    #   * budget exhausted (error set, all attempts failed)     -> len(failures)
+    #   * happy path / self-healed (final attempt succeeded)    -> len(failures) + 1
+    # validate_sql_node deliberately leaves ``state.sql`` set on failure so
+    # the retry prompt can reference it, which means ``result.sql`` alone
+    # cannot disambiguate success from terminal failure — we have to check
+    # ``error`` too.
+    if not result.get("sql"):
+        attempts_count = 0
+    elif result.get("error"):
+        attempts_count = len(this_turn_failures)
+    else:
+        attempts_count = len(this_turn_failures) + 1
 
     return AskResponse(
         answer=result.get("answer", ""),

@@ -17,8 +17,19 @@ or directly::
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from collections.abc import AsyncIterator
+
 import pytest
+import pytest_asyncio
 from copilot.agent import build_graph
+from copilot.checkpointer import (
+    conversation_lock,
+    dispose_checkpointer,
+    get_checkpointer,
+    setup_checkpointer,
+)
 from copilot.config import get_settings
 
 pytestmark = pytest.mark.integration
@@ -269,3 +280,105 @@ async def test_chitchat_followup_after_data(stateful_graph) -> None:
     # 3 turns → 6 dialogue entries
     assert len(r3.get("dialogue") or []) == 6
     assert r3["turn_index"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Week 5: concurrent writes to the same conversation_id
+# ---------------------------------------------------------------------------
+#
+# These two tests use a real AsyncPostgresSaver (not InMemorySaver) because
+# in-memory state is single-threaded by virtue of the GIL — the
+# last-writer-wins bug we are guarding against only manifests against a
+# real persistence layer. See ADR 0005 §4.
+
+
+@pytest_asyncio.fixture()
+async def postgres_graph() -> AsyncIterator:
+    """Build a graph backed by the real AsyncPostgresSaver.
+
+    Function-scope (not module-scope) deliberately: pytest-asyncio's
+    default function-scoped event loop does not play well with
+    module-scoped async fixtures — the pool's background workers get
+    cancelled mid-teardown and emit a noisy ``CancelledError`` that
+    fails the test session even when the test itself passed. Per-test
+    setup/dispose costs ~200 ms and keeps the teardown clean.
+
+    Each test should still use a unique ``thread_id`` (UUID) so
+    multiple test runs do not collide via leftover checkpoint rows.
+    """
+    await setup_checkpointer()
+    saver = await get_checkpointer()
+    graph = build_graph(checkpointer=saver)
+    try:
+        yield graph
+    finally:
+        await dispose_checkpointer()
+
+
+async def test_concurrent_same_thread_does_not_lose_turns(postgres_graph) -> None:
+    """Fire two ainvoke calls on the same thread_id concurrently. The
+    advisory lock must serialise them so both turns survive.
+
+    Without the lock, the two writers would each read the same baseline
+    (empty dialogue), each compute a +1-turn diff, and last-commit wins
+    — exactly one turn would survive (dialogue length = 2). With the
+    lock, the second caller waits for the first to finish before
+    reading, so both turns chain properly (dialogue length = 4).
+    """
+    _skip_without_real_credentials()
+
+    thread_id = f"concurrency-test-{uuid.uuid4()}"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    async def _one_turn(question: str) -> dict:
+        async with conversation_lock(thread_id):
+            return await postgres_graph.ainvoke({"question": question}, config=config)
+
+    r1, r2 = await asyncio.gather(
+        _one_turn("How many customers are there?"),
+        _one_turn("How many products are there?"),
+    )
+
+    assert r1.get("error") is None
+    assert r2.get("error") is None
+
+    # One of the two returns will reflect the FINAL state (turn 2),
+    # the other will reflect its own state-after-write (turn 1). We
+    # cannot predict the ordering deterministically because asyncio
+    # decides who acquires the lock first — but whichever ran second
+    # MUST see a dialogue of length 4. So we check the max of the two.
+    final_dialogue_len = max(
+        len(r1.get("dialogue") or []),
+        len(r2.get("dialogue") or []),
+    )
+    assert final_dialogue_len == 4, (
+        f"expected 4 dialogue entries (both turns persisted), "
+        f"got {final_dialogue_len}. last-writer-wins regression?"
+    )
+
+
+async def test_different_threads_run_in_parallel(postgres_graph) -> None:
+    """Different conversation_ids hash to different lock keys and must
+    NOT serialise — concurrent unrelated conversations should make
+    progress independently. We just check both calls succeed; precise
+    timing is unreliable in CI."""
+    _skip_without_real_credentials()
+
+    thread_a = f"parallel-test-a-{uuid.uuid4()}"
+    thread_b = f"parallel-test-b-{uuid.uuid4()}"
+
+    async def _one_call(thread_id: str, question: str) -> dict:
+        async with conversation_lock(thread_id):
+            return await postgres_graph.ainvoke(
+                {"question": question},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+
+    ra, rb = await asyncio.gather(
+        _one_call(thread_a, "How many customers are there?"),
+        _one_call(thread_b, "How many products are there?"),
+    )
+
+    assert ra.get("error") is None and rb.get("error") is None
+    assert "customers" in (ra.get("sql") or "").lower()
+    assert "products" in (rb.get("sql") or "").lower()

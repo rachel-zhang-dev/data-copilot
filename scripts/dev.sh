@@ -10,6 +10,7 @@
 #   ./scripts/dev.sh test-integration  # integration tests (real APIs + DB)
 #   ./scripts/dev.sh index [--force]   # (re)build schema_embeddings
 #   ./scripts/dev.sh ask "..."         # quick one-shot agent invocation
+#   ./scripts/dev.sh ask --cid ID "...". # continue a thread (multi-turn dialogue)
 
 set -euo pipefail
 
@@ -69,33 +70,68 @@ case "$cmd" in
     ;;
   ask)
     shift
+    # Optional --cid <id> flag to continue an existing conversation.
+    # When omitted, the script generates a fresh UUID and prints it so the
+    # user can pass it back on the next call (week-5 multi-turn support).
+    conversation_id=""
+    if [ "${1:-}" = "--cid" ]; then
+      conversation_id="${2:?--cid requires a thread id}"
+      shift 2
+    fi
     question="${*:-What can you do?}"
     cd apps/api
-    uv run python -c "
+    # Pass the conversation id and question through the environment to avoid
+    # bash-vs-python quoting pitfalls inside the heredoc.
+    export DC_CONVERSATION_ID="$conversation_id"
+    export DC_QUESTION="$question"
+    uv run python <<'PYEOF'
 import asyncio
 import json
-from copilot.agent import build_graph
+import os
+import uuid
 
-async def main():
-    graph = build_graph()
-    result = await graph.ainvoke({'question': '''$question'''})
-    if result.get('sql'):
-        print('--- SQL ---')
-        print(result['sql'])
-    if result.get('row_count') is not None:
-        print(f'--- ROWS ({result[\"row_count\"]}) ---')
-        rows = result.get('sql_result') or []
-        print(json.dumps(rows[:5], default=str, ensure_ascii=False, indent=2))
-        if len(rows) > 5:
-            print(f'... and {len(rows) - 5} more')
-    if result.get('error'):
-        print('--- ERROR ---')
-        print(result['error'])
-    print('--- ANSWER ---')
-    print(result.get('answer', ''))
+from copilot.agent import build_graph
+from copilot.checkpointer import (
+    conversation_lock,
+    dispose_checkpointer,
+    get_checkpointer,
+    setup_checkpointer,
+)
+
+
+async def main() -> None:
+    await setup_checkpointer()
+    try:
+        graph = build_graph(checkpointer=await get_checkpointer())
+        conversation_id = os.environ.get("DC_CONVERSATION_ID") or str(uuid.uuid4())
+        question = os.environ["DC_QUESTION"]
+        config = {"configurable": {"thread_id": conversation_id}}
+        async with conversation_lock(conversation_id):
+            result = await graph.ainvoke({"question": question}, config=config)
+        if result.get("sql"):
+            print("--- SQL ---")
+            print(result["sql"])
+        if result.get("row_count") is not None:
+            print(f"--- ROWS ({result['row_count']}) ---")
+            rows = result.get("sql_result") or []
+            print(json.dumps(rows[:5], default=str, ensure_ascii=False, indent=2))
+            if len(rows) > 5:
+                print(f"... and {len(rows) - 5} more")
+        if result.get("error"):
+            print("--- ERROR ---")
+            print(result["error"])
+        print("--- ANSWER ---")
+        print(result.get("answer", ""))
+        print("--- THREAD ---")
+        print(f"conversation_id: {conversation_id}")
+        print(f"turn_index:      {result.get('turn_index')}")
+        print(f"(continue with: ./scripts/dev.sh ask --cid {conversation_id} '...')")
+    finally:
+        await dispose_checkpointer()
+
 
 asyncio.run(main())
-"
+PYEOF
     ;;
   *)
     echo "Usage: $0 {up|down|api|test|test-integration|index|ask <question>}"
