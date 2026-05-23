@@ -28,6 +28,41 @@ def test_classify_intent_returns_data_for_data_question(stub_llm_factory) -> Non
     assert out["intent"] == "data"
 
 
+# ---------------------------------------------------------------------------
+# Regression: no LLM-calling node should append to ``state["messages"]``.
+# That field used to grow unboundedly because four nodes returned
+# ``{"messages": [response]}``; with the week-5 checkpointer that growth
+# bloated every Postgres checkpoint row. Nothing actually reads from
+# ``messages`` in our code, so the fix was to stop writing it. This test
+# locks that decision in place — if anyone re-introduces a write here,
+# the test fails immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_no_node_writes_to_messages_field(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "CREATE TABLE customers (id INT);")
+    stub_llm_factory(
+        "data",  # classify_intent
+        "Hi there!",  # small_talk
+        "SELECT * FROM customers",  # generate_sql
+        "There are 91 customers.",  # summarize_result
+    )
+
+    state: dict[str, Any] = {"question": "How many customers?", "sql_result": [], "sql": "SELECT 1"}
+    outputs = [
+        nodes.classify_intent_node(state),
+        nodes.small_talk_node(state),
+        nodes.generate_sql_node(state),
+        nodes.summarize_result_node(state),
+    ]
+    for out in outputs:
+        assert "messages" not in out, (
+            f"node returned 'messages' — reintroduce the cleanup from ADR 0005 §5: {out}"
+        )
+
+
 def test_classify_intent_returns_chitchat_for_greeting(stub_llm_factory) -> None:
     stub_llm_factory("chitchat")
     out = nodes.classify_intent_node({"question": "Hello!"})

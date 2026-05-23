@@ -169,7 +169,7 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
     if raw and raw[0] in {"data", "chitchat"}:
         intent = raw[0]  # type: ignore[assignment]
     log.info("classify_intent -> %s", intent)
-    return {"intent": intent, "messages": [response]}
+    return {"intent": intent}
 
 
 def small_talk_node(state: AgentState) -> dict[str, Any]:
@@ -186,7 +186,7 @@ def small_talk_node(state: AgentState) -> dict[str, Any]:
         ]
     )
     answer = _message_text(response).strip()
-    return {"answer": answer, "messages": [response]}
+    return {"answer": answer}
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,6 @@ def generate_sql_node(state: AgentState) -> dict[str, Any]:
         "sql": sql,
         "relevant_schema": schema,
         "error": None,
-        "messages": [response],
     }
 
 
@@ -343,7 +342,7 @@ def summarize_result_node(state: AgentState) -> dict[str, Any]:
         ]
     )
     answer = _message_text(response).strip()
-    return {"answer": answer, "messages": [response]}
+    return {"answer": answer}
 
 
 def finalize_error_node(state: AgentState) -> dict[str, Any]:

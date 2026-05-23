@@ -11,6 +11,15 @@ read or written is spelled correctly.
 Reducer summary
 ---------------
 * ``messages``  — ``add_messages`` (LangChain): smart append + dedupe.
+                  Field is declared for LangChain compatibility but our
+                  own nodes deliberately do NOT write to it; every LLM
+                  call is captured by LangSmith as a child run, and the
+                  user-facing transcript lives in ``dialogue``.
+                  Appending here on every node call was an uncapped
+                  leak (state is persisted via the checkpointer, so the
+                  list — and Postgres row size — grew linearly in turn
+                  count). See ADR 0005 §"Why we stopped appending to
+                  messages".
 * ``attempts``  — ``operator.add``: plain append. ``turn_idx`` on each
                   Attempt lets ``can_retry`` ignore failures from
                   earlier turns (week 5).
@@ -101,8 +110,10 @@ class AgentState(TypedDict, total=False):
     incrementally as the agent makes progress.
     """
 
-    # Conversation history. The ``add_messages`` reducer concatenates
-    # any messages a node returns onto whatever was there before.
+    # Declared for LangChain ecosystem compatibility — our own nodes do
+    # not write here (see module docstring for why). The reducer stays
+    # in place so an external tool node or downstream caller could still
+    # append safely without changing the type.
     messages: Annotated[list[Any], add_messages]
 
     # ---------- Inputs (set by the caller) ----------
