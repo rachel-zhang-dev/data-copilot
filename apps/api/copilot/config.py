@@ -43,9 +43,36 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
 
-    # ---------- Embeddings (optional until week 3) ----------
-    dashscope_api_key: str | None = None
-    embedding_model: str = "text-embedding-v3"
+    # ---------- Embeddings (required from week 3 onwards) ----------
+    siliconflow_api_key: str = Field(
+        ...,
+        description=(
+            "SiliconFlow API key. Used for BGE-M3 embeddings. Register at "
+            "https://cloud.siliconflow.cn/ — BGE models are free to call. "
+            "Swap to any OpenAI-compatible embedding provider by changing "
+            "EMBEDDING_BASE_URL and EMBEDDING_MODEL."
+        ),
+    )
+    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_dim: int = Field(
+        default=1024,
+        ge=64,
+        le=8192,
+        description=(
+            "Vector dimension produced by the embedding model. Must match "
+            "the dimension of the schema_embeddings.embedding column."
+        ),
+    )
+    schema_top_k: int = Field(
+        default=4,
+        ge=1,
+        le=50,
+        description=(
+            "How many tables the schema retriever returns before foreign-key "
+            "expansion. 4 is enough for Northwind; raise it for wider schemas."
+        ),
+    )
 
     # ---------- Observability (always optional) ----------
     langsmith_api_key: str | None = None

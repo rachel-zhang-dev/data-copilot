@@ -48,7 +48,7 @@ Major decisions are recorded as [ADRs](docs/decisions/).
 |-------|--------|
 | Agent runtime | **LangGraph** + **LangChain** |
 | LLM | DeepSeek-Chat (primary) · GPT-4o-mini · Claude Sonnet (benchmarked) |
-| Embeddings | DashScope `text-embedding-v3` |
+| Embeddings | **SiliconFlow `BAAI/bge-m3`** (free tier) — swap-able via env var |
 | Backend | FastAPI · Pydantic v2 · Python 3.11 |
 | Database & vectors | PostgreSQL 16 · `pgvector` |
 | Frontend | Next.js 15 · TypeScript · Tailwind · shadcn/ui |
@@ -81,12 +81,34 @@ uv sync --all-extras
 ./scripts/dev.sh ask "How many customers are there?"
 ./scripts/dev.sh ask "List the 5 most expensive products."
 ./scripts/dev.sh ask "Which country has the most customers?"
+
+# 7. Schema-aware retrieval lets the agent handle JOINs (week 3)
+./scripts/dev.sh ask "Which 5 products have the highest total revenue?"
+./scripts/dev.sh ask "Which employees handled orders shipped to Germany?"
 ```
 
 The `ask` command prints the SQL the agent generated, the rows it
 fetched, and the natural-language answer — useful for debugging the
 graph end-to-end. Unsafe inputs like `"Drop the orders table"` are
 caught by the safety layer (see [ADR 0002](docs/decisions/0002-sql-safety.md)).
+
+### Schema retrieval
+
+Since week 3, the agent does not dump the entire schema into every
+prompt. A retrieval node embeds your question, looks up the top-K
+most relevant tables in pgvector, and expands the result one hop
+along foreign keys — so `"top products by sales"` automatically
+pulls in the bridge table `order_details` even though the question
+never names it. See [ADR 0003](docs/decisions/0003-embedding-provider.md)
+for why we picked SiliconFlow / BGE-M3.
+
+The retrieval index is built automatically the first time you run
+`./scripts/dev.sh up`. Rebuild manually with:
+
+```bash
+./scripts/dev.sh index --force   # full rebuild
+./scripts/dev.sh index --check   # inspect current state, no writes
+```
 
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
@@ -96,7 +118,7 @@ caught by the safety layer (see [ADR 0002](docs/decisions/0002-sql-safety.md)).
 |------|-----------|
 | 1 ✅ | Project scaffold, environment, hello-world LangGraph node |
 | 2 ✅ | Single-table text-to-SQL baseline (no RAG yet) |
-| 3 | Schema retrieval with pgvector (multi-table) |
+| 3 ✅ | Schema retrieval with pgvector (multi-table) |
 | 4 | Refactor to full LangGraph state machine with self-healing |
 | 5 | Multi-turn dialogue + chat history compaction |
 | 6 | Evaluation set (100 queries) + LangSmith dashboards |

@@ -1,6 +1,6 @@
 # Architecture
 
-> Last updated: week 2 — multi-node text-to-SQL pipeline.
+> Last updated: week 3 — schema-aware RAG retrieval over pgvector.
 
 ## High-level diagram
 
@@ -19,7 +19,7 @@ flowchart TB
         direction TB
         N1["classify_intent"]
         N1b["small_talk"]
-        N2["retrieve_schema<br/>(week 3 — RAG)"]
+        N2["retrieve_schema<br/>(pgvector + FK 1-hop)"]
         N3["generate_sql"]
         N4{"validate_sql"}
         N5["execute_sql"]
@@ -27,7 +27,8 @@ flowchart TB
         N7["finalize_error<br/>(week 4: → rewrite_sql)"]
 
         N1 -- chitchat --> N1b
-        N1 -- data --> N3
+        N1 -- data --> N2
+        N2 --> N3
         N3 --> N4
         N4 -- valid --> N5 --> N6
         N4 -- invalid --> N7
@@ -66,24 +67,27 @@ flowchart TB
 | API | FastAPI + Pydantic v2 | Thin HTTP layer over the agent. |
 | Agent runtime | LangGraph | State machine that orchestrates retrieval, generation, validation, and self-healing. |
 | LLM | DeepSeek (chat) | Primary text-to-SQL and summarisation model. OpenAI-compatible API for portability. |
-| Embeddings | DashScope `text-embedding-v3` | Cheap, high-quality embeddings for schema retrieval. |
+| Embeddings | SiliconFlow `BAAI/bge-m3` | Free, OpenAI-compatible, multilingual SOTA. See [ADR 0003](decisions/0003-embedding-provider.md). |
 | Vector store | pgvector inside Postgres | Co-locating data and embeddings simplifies ops; same connection pool. |
 | Observability | LangSmith | Traces, evaluations, and regression dashboards. |
 
-## What is implemented today (end of week 2)
+## What is implemented today (end of week 3)
 
 | Concern | Status | Notes |
 |---|---|---|
 | Intent classification (data vs chitchat) | ✅ | `classify_intent_node`; tiny prompt, `temperature=0` |
-| Schema introspection | ✅ | Full DDL pulled from `information_schema` at startup, cached |
-| SQL generation | ✅ | `generate_sql_node`; DeepSeek with full schema in prompt |
+| Schema introspection | ✅ | `db.list_tables()` / `db.get_table_ddl(names)` |
+| FK graph introspection | ✅ | `db.get_foreign_keys()` — used for 1-hop expansion |
+| Schema embeddings | ✅ | `BAAI/bge-m3` via SiliconFlow → pgvector `schema_embeddings` (HNSW) |
+| Schema retrieval (RAG) | ✅ | `retrieve_schema_node`: top-K vector search + named-table fast path + FK expansion + full-schema fallback |
+| SQL generation | ✅ | `generate_sql_node`; DeepSeek with focused schema in prompt |
 | SQL safety / row cap | ✅ | sqlglot AST validation + auto `LIMIT` (see [ADR 0002](decisions/0002-sql-safety.md)) |
 | SQL execution | ✅ | SQLAlchemy + psycopg3, sync pool managed in lifespan |
 | Result summarisation | ✅ | `summarize_result_node`; rows JSON-previewed to LLM |
 | Error finalisation | ✅ | Deterministic templates per error class |
-| Schema retrieval (RAG) | ⏳ week 3 | replaces "dump full DDL" with top-k table embeddings |
 | Self-healing loop | ⏳ week 4 | currently `finalize_error` terminates; will loop back to `generate_sql` |
 | Multi-turn dialogue | ⏳ week 5 | state already has `messages` with reducer in place |
+| Eval harness | ⏳ week 6 | will A/B retrieval strategies on a fixed question set |
 
 ## Why LangGraph rather than plain LangChain?
 

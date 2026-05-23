@@ -401,7 +401,76 @@ both a chat bubble and a data table.
 
 ---
 
-## 10. Glossary (so you do not have to Google mid-read)
+## 10. Week 3 — schema-aware RAG
+
+The week-2 `generate_sql` node received **all 14 tables' DDL** in
+every prompt. That works for Northwind but does not scale to
+hundreds of tables. Week 3 inserts a `retrieve_schema` node before
+SQL generation that picks just the relevant tables.
+
+### 10.1 Three pieces
+
+- `copilot/embeddings.py` — 1-function factory returning a
+  `langchain_openai.OpenAIEmbeddings` pointed at SiliconFlow.
+  Provider switch is one env-var change.
+- `copilot/agent/retriever.py` — the `retrieve_schema_node` plus
+  two pure helpers (`directly_named_tables` for the literal-mention
+  shortcut, `expand_with_foreign_keys` for FK graph traversal).
+- `copilot/indexer.py` — offline indexer; rebuilds
+  `schema_embeddings` in one transaction.
+
+### 10.2 Why a separate indexer
+
+"Build vs serve" separation. Doing the embedding work eagerly at
+server startup would couple deploy reliability to SiliconFlow's
+uptime. Instead:
+
+```
+./scripts/dev.sh up            # auto-runs index when table is empty
+./scripts/dev.sh index --force # explicit rebuild after schema change
+./scripts/dev.sh index --check # inspect current state, no writes
+```
+
+If `schema_embeddings` is empty or the embedding API errors, the
+agent falls back to dumping the full schema. RAG outage degrades
+quality gracefully, never takes the agent offline.
+
+### 10.3 Query-time path
+
+```python
+def retrieve_schema_node(state):
+    named   = directly_named_tables(state["question"], list_tables())
+    top_k   = vector_search_tables(state["question"], schema_top_k)
+    seed    = named | set(top_k)
+    expanded = expand_with_foreign_keys(seed, get_foreign_keys(), max_hops=1)
+    return {"relevant_schema": get_table_ddl(sorted(expanded))}
+```
+
+The named-table fast-path is not just optimisation — it is what
+keeps the agent useful when the embedding API is flaky.
+
+FK expansion happens here, not in `generate_sql`'s prompt, because
+the LLM needs to see the bridge table's actual columns to write a
+correct JOIN.
+
+### 10.4 What the LLM sees
+
+For "Top 5 products by total revenue", before week 3 the prompt
+included DDL for all 14 tables. After week 3 it includes only
+`products`, `categories`, `order_details`, `orders` — about 60%
+fewer tokens, with explicit "Foreign keys" / "Referenced by"
+markers so the JOIN direction is unambiguous.
+
+### 10.5 Week-2 `get_schema_ddl()` is now the fallback
+
+`get_schema_ddl()` still exists — it backs the "dump everything"
+fallback path. It now delegates to `get_table_ddl(list_tables())`,
+so there is exactly one place that knows how to format a table
+block.
+
+---
+
+## 11. Glossary (so you do not have to Google mid-read)
 
 | Term | One-liner |
 |------|----------|

@@ -21,7 +21,9 @@ dependencies = [
     "langsmith>=0.1.140",
 
     # ---------- Embeddings ----------
-    "dashscope>=1.20.0",                # Alibaba DashScope for embeddings
+    # BGE-M3 via SiliconFlow uses the OpenAI-compatible protocol, so the
+    # OpenAIEmbeddings class from langchain-openai (already a dependency)
+    # is enough — no provider-specific SDK required.
 
     # ---------- Database ----------
     "psycopg[binary]>=3.2.0",

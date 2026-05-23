@@ -1,8 +1,10 @@
-"""LangGraph wiring — the week-2 multi-node text-to-SQL agent.
+"""LangGraph wiring — the week-3 multi-node text-to-SQL agent with
+schema-aware retrieval.
 
-Read this file alongside ``nodes.py`` (what each node does) and
-``state.py`` (what flows between them). This file is purely about the
-*shape* of the graph; all real work is inside node functions.
+Read this file alongside ``nodes.py`` and ``retriever.py`` (what each
+node does) and ``state.py`` (what flows between them). This file is
+purely about the *shape* of the graph; all real work is inside node
+functions.
 
 Graph::
 
@@ -13,9 +15,14 @@ Graph::
               chitchat ---+--- data
               |                 |
               v                 v
-        +-----------+    +---------------+
-        | small_talk|    |  generate_sql |
-        +-----+-----+    +-------+-------+
+        +-----------+    +-------------------+
+        | small_talk|    | retrieve_schema   |  <-- new in week 3
+        +-----+-----+    +-------+-----------+
+              |                  |
+              |                  v
+              |          +---------------+
+              |          |  generate_sql |
+              |          +-------+-------+
               |                  |
               |                  v
               |          +---------------+
@@ -53,6 +60,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from copilot.agent import nodes
+from copilot.agent.retriever import retrieve_schema_node
 from copilot.agent.state import AgentState
 
 
@@ -73,6 +81,7 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
 
     workflow.add_node("classify_intent", nodes.classify_intent_node)
     workflow.add_node("small_talk", nodes.small_talk_node)
+    workflow.add_node("retrieve_schema", retrieve_schema_node)
     workflow.add_node("generate_sql", nodes.generate_sql_node)
     workflow.add_node("validate_sql", nodes.validate_sql_node)
     workflow.add_node("execute_sql", nodes.execute_sql_node)
@@ -82,16 +91,17 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
     workflow.add_edge(START, "classify_intent")
 
     # Intent fan-out: chitchat short-circuits to a friendly reply; data
-    # questions go through the full SQL pipeline.
+    # questions first go through the schema retriever, then SQL gen.
     workflow.add_conditional_edges(
         "classify_intent",
         nodes.route_after_classify,
         {
             "small_talk": "small_talk",
-            "generate_sql": "generate_sql",
+            "generate_sql": "retrieve_schema",
         },
     )
 
+    workflow.add_edge("retrieve_schema", "generate_sql")
     workflow.add_edge("generate_sql", "validate_sql")
 
     # After validation: either jump straight to the error sink or proceed

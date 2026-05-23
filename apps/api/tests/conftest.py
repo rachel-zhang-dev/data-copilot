@@ -18,6 +18,7 @@ import pytest
 # ``copilot.config`` during test collection blows up because
 # ``DATABASE_URL`` is required (it became required in week 2).
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-key-not-used")
+os.environ.setdefault("SILICONFLOW_API_KEY", "test-key-not-used")
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql://copilot:copilot_dev_pwd@localhost:5432/northwind",

@@ -2,21 +2,45 @@
 # Local development helper.
 #
 # Usage:
-#   ./scripts/dev.sh up                # start postgres
+#   ./scripts/dev.sh up                # start postgres (auto-builds the
+#                                        schema index if it is empty)
 #   ./scripts/dev.sh down              # stop postgres
 #   ./scripts/dev.sh api               # run the FastAPI server with reload
-#   ./scripts/dev.sh test              # run unit tests (excluding integration)
-#   ./scripts/dev.sh test-integration  # run integration tests (needs real .env + DB)
+#   ./scripts/dev.sh test              # unit tests (no integration)
+#   ./scripts/dev.sh test-integration  # integration tests (real APIs + DB)
+#   ./scripts/dev.sh index [--force]   # (re)build schema_embeddings
 #   ./scripts/dev.sh ask "..."         # quick one-shot agent invocation
 
 set -euo pipefail
 
 cmd="${1:-help}"
 
+# Helper: count rows in schema_embeddings; prints "" if Postgres is down.
+count_index_rows() {
+  docker exec data-copilot-postgres psql -U copilot -d northwind -tA \
+      -c "SELECT count(*) FROM schema_embeddings" 2>/dev/null || echo ""
+}
+
 case "$cmd" in
   up)
     docker compose up -d postgres
     echo "Postgres is starting. Tail logs with: docker compose logs -f postgres"
+    # Wait for healthcheck before deciding whether to auto-index.
+    for i in $(seq 1 20); do
+      if [ "$(docker inspect --format='{{.State.Health.Status}}' data-copilot-postgres 2>/dev/null)" = "healthy" ]; then
+        break
+      fi
+      sleep 1
+    done
+    rows=$(count_index_rows)
+    if [ -z "$rows" ]; then
+      echo "Postgres did not become healthy in time; skip auto-index. Run './scripts/dev.sh index' manually."
+    elif [ "$rows" = "0" ]; then
+      echo "schema_embeddings is empty. Building the index..."
+      "$0" index || echo "WARN: indexer failed. Check SILICONFLOW_API_KEY in .env, then re-run: ./scripts/dev.sh index"
+    else
+      echo "schema_embeddings already has $rows rows; skipping index build (use './scripts/dev.sh index --force' to rebuild)."
+    fi
     ;;
   down)
     docker compose down
@@ -30,8 +54,18 @@ case "$cmd" in
     uv run pytest -m "not integration"
     ;;
   test-integration)
+    rows=$(count_index_rows)
+    if [ -z "$rows" ] || [ "$rows" = "0" ]; then
+      echo "schema_embeddings is empty. Run './scripts/dev.sh up' first to build the index."
+      exit 1
+    fi
     cd apps/api
     uv run pytest -m integration
+    ;;
+  index)
+    shift || true
+    cd apps/api
+    uv run python -m copilot.indexer "$@"
     ;;
   ask)
     shift
@@ -45,7 +79,6 @@ from copilot.agent import build_graph
 async def main():
     graph = build_graph()
     result = await graph.ainvoke({'question': '''$question'''})
-    # Show what the agent actually did, not just the final answer.
     if result.get('sql'):
         print('--- SQL ---')
         print(result['sql'])
@@ -65,7 +98,7 @@ asyncio.run(main())
 "
     ;;
   *)
-    echo "Usage: $0 {up|down|api|test|test-integration|ask <question>}"
+    echo "Usage: $0 {up|down|api|test|test-integration|index|ask <question>}"
     exit 1
     ;;
 esac

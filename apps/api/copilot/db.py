@@ -100,43 +100,104 @@ def run_select(sql: str, *, engine: Engine | None = None) -> list[dict[str, Any]
         return [_row_to_dict(r) for r in result.fetchall()]
 
 
-@lru_cache(maxsize=1)
-def get_schema_ddl(engine: Engine | None = None) -> str:
-    """Return a compact, LLM-friendly schema description of the DB.
+_BUSINESS_TABLE_FILTER = (
+    "table_schema = 'public' "
+    "AND table_type = 'BASE TABLE' "
+    # Exclude tables created by the agent itself (week 3 added schema_embeddings)
+    # so they never appear in user-facing schema dumps or get retrieved as
+    # candidates for SQL generation.
+    "AND table_name NOT IN ('schema_embeddings')"
+)
 
-    The output looks like::
 
-        Table: customers
-          - customer_id (varchar, PK)
-          - company_name (varchar, NOT NULL)
-          - ...
+def list_tables(engine: Engine | None = None) -> list[str]:
+    """Return the sorted list of business tables in the public schema.
 
-        Table: orders
-          - ...
-
-    We deliberately do **not** dump full ``CREATE TABLE`` DDL — those
-    contain noise like tablespace pragmas that waste tokens. The output
-    above is dense, readable, and well within DeepSeek's 64K context.
+    "Business" excludes tables the agent itself owns (schema_embeddings),
+    so the LLM never accidentally writes SQL against them.
     """
     eng = engine or get_engine()
     with eng.connect() as conn:
-        tables = [
+        return [
             row[0]
             for row in conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT table_name
                     FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                      AND table_type = 'BASE TABLE'
+                    WHERE {_BUSINESS_TABLE_FILTER}
                     ORDER BY table_name
                     """
                 )
             ).fetchall()
         ]
 
+
+def _format_table_block(
+    table: str,
+    cols: list[tuple[str, str, str, str]],
+    fks_out: list[tuple[str, str, str]],
+    fks_in: list[tuple[str, str, str]],
+) -> str:
+    """Render one table block for the LLM prompt.
+
+    ``fks_out``: this table's columns referencing another table.
+    ``fks_in``:  another table's columns referencing this one.
+    Both are surfaced because the LLM needs them to write JOINs in
+    either direction.
+    """
+    lines = [f"Table: {table}"]
+    for name, dtype, nullable, pk in cols:
+        tags = []
+        if pk:
+            tags.append("PK")
+        if nullable == "NO":
+            tags.append("NOT NULL")
+        tag_str = f" [{', '.join(tags)}]" if tags else ""
+        lines.append(f"  - {name} ({dtype}){tag_str}")
+
+    if fks_out:
+        lines.append("  Foreign keys (out):")
+        for col, ref_tbl, ref_col in fks_out:
+            lines.append(f"    - {col} -> {ref_tbl}.{ref_col}")
+    if fks_in:
+        lines.append("  Referenced by:")
+        for ref_tbl, ref_col, col in fks_in:
+            lines.append(f"    - {ref_tbl}.{ref_col} -> {col}")
+
+    return "\n".join(lines)
+
+
+def get_table_ddl(table_names: list[str], engine: Engine | None = None) -> str:
+    """Return an LLM-friendly schema description for the given tables.
+
+    Output format::
+
+        Table: customers
+          - customer_id (varchar) [PK, NOT NULL]
+          - company_name (varchar) [NOT NULL]
+          ...
+          Foreign keys (out):
+            - region_id -> region.region_id
+          Referenced by:
+            - orders.customer_id -> customer_id
+
+    Each table block is self-contained: column types, nullability, PK
+    membership, AND foreign-key relationships in both directions. The
+    last bit is what lets the LLM write JOINs for "top products by
+    sales" type questions where the question never names the bridge
+    table.
+    """
+    if not table_names:
+        return ""
+
+    eng = engine or get_engine()
+    fk_out_map = _get_fk_details_outgoing(eng)
+    fk_in_map = _get_fk_details_incoming(eng)
+
+    with eng.connect() as conn:
         pieces: list[str] = []
-        for table in tables:
+        for table in sorted(table_names):
             cols = conn.execute(
                 text(
                     """
@@ -163,15 +224,97 @@ def get_schema_ddl(engine: Engine | None = None) -> str:
                 {"tbl": table},
             ).fetchall()
 
-            lines = [f"Table: {table}"]
-            for name, dtype, nullable, pk in cols:
-                tags = []
-                if pk:
-                    tags.append("PK")
-                if nullable == "NO":
-                    tags.append("NOT NULL")
-                tag_str = f" [{', '.join(tags)}]" if tags else ""
-                lines.append(f"  - {name} ({dtype}){tag_str}")
-            pieces.append("\n".join(lines))
+            block = _format_table_block(
+                table=table,
+                cols=[(c[0], c[1], c[2], c[3]) for c in cols],
+                fks_out=fk_out_map.get(table, []),
+                fks_in=fk_in_map.get(table, []),
+            )
+            pieces.append(block)
 
         return "\n\n".join(pieces)
+
+
+@lru_cache(maxsize=1)
+def get_schema_ddl(engine: Engine | None = None) -> str:
+    """Return DDL for **all** business tables — the legacy week-2 dump.
+
+    Used as fallback when retrieval fails (see ``retrieve_schema_node``)
+    and by the indexer when generating per-table descriptions.
+    """
+    return get_table_ddl(list_tables(engine), engine=engine)
+
+
+@lru_cache(maxsize=1)
+def get_foreign_keys(engine: Engine | None = None) -> dict[str, set[str]]:
+    """Return the undirected FK adjacency graph: ``{table: {linked_tables}}``.
+
+    Used by the retriever to expand the top-K embedding hits one hop
+    along foreign keys, so JOIN-bridge tables get pulled in even when
+    the user's question never names them.
+    """
+    eng = engine or get_engine()
+    graph: dict[str, set[str]] = {}
+    with eng.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                    tc.table_name AS src,
+                    ccu.table_name AS dst
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                   AND tc.table_schema = ccu.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = 'public'
+                """
+            )
+        ).fetchall()
+        for src, dst in rows:
+            if src == dst:
+                continue
+            graph.setdefault(src, set()).add(dst)
+            graph.setdefault(dst, set()).add(src)
+    return graph
+
+
+def _get_fk_details_outgoing(
+    engine: Engine,
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Return ``{table: [(local_col, ref_tbl, ref_col), ...]}``."""
+    out: dict[str, list[tuple[str, str, str]]] = {}
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                    tc.table_name  AS src_tbl,
+                    kcu.column_name AS src_col,
+                    ccu.table_name  AS dst_tbl,
+                    ccu.column_name AS dst_col
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_schema = 'public'
+                ORDER BY tc.table_name, kcu.ordinal_position
+                """
+            )
+        ).fetchall()
+        for src_tbl, src_col, dst_tbl, dst_col in rows:
+            out.setdefault(src_tbl, []).append((src_col, dst_tbl, dst_col))
+    return out
+
+
+def _get_fk_details_incoming(
+    engine: Engine,
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Return ``{table: [(referencing_tbl, referencing_col, local_col), ...]}``."""
+    inc: dict[str, list[tuple[str, str, str]]] = {}
+    for src_tbl, fks in _get_fk_details_outgoing(engine).items():
+        for src_col, dst_tbl, dst_col in fks:
+            inc.setdefault(dst_tbl, []).append((src_tbl, src_col, dst_col))
+    return inc
