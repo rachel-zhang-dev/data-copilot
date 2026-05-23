@@ -260,10 +260,23 @@ def generate_sql_node(state: AgentState) -> dict[str, Any]:
 
 def _format_history_block(dialogue: list[Any]) -> str:
     """Build the optional ``{history}`` block that goes into the
-    SQL-generation prompt. Empty string when there is no prior
-    dialogue, otherwise the formatted CONVERSATION_HISTORY_TEMPLATE."""
+    SQL-generation prompt.
+
+    Returns the empty string when:
+      * there is no prior dialogue, OR
+      * the eval flag ``DIALOGUE_CONTEXT_ENABLED`` is False (used by
+        experiment A3 to measure how much follow-up resolution
+        depends on history injection).
+    """
     if not dialogue:
         return ""
+    # Lazy import: production never reads ``feature_flags`` outside
+    # an active eval ``override`` block.
+    from copilot.agent import feature_flags
+
+    if not feature_flags.DIALOGUE_CONTEXT_ENABLED:
+        return ""
+
     rendered = format_dialogue_for_prompt(dialogue)
     if not rendered:
         return ""

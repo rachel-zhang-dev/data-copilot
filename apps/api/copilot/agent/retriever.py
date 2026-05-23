@@ -117,12 +117,24 @@ def retrieve_schema_node(state: AgentState) -> dict[str, Any]:
     """LangGraph node: pick a focused schema for the data branch.
 
     Strategy:
-        1. If the question literally names tables, seed with those.
-        2. Otherwise (or in addition), do a top-K vector search.
-        3. Expand the seed set 1 hop along foreign keys.
-        4. Build a focused DDL from those tables.
-        5. On any error, fall back to the full schema.
+        1. If the eval flag ``SCHEMA_RAG_ENABLED`` is False, skip the
+           retriever entirely and dump the full schema (week-2 behaviour).
+           Used by experiment A1 to quantify what RAG buys us.
+        2. If the question literally names tables, seed with those.
+        3. Otherwise (or in addition), do a top-K vector search.
+        4. Expand the seed set 1 hop along foreign keys.
+        5. Build a focused DDL from those tables.
+        6. On any error, fall back to the full schema.
     """
+    # Imported lazily so the production import graph does not pick up
+    # the eval-only ``feature_flags`` module unless an experiment
+    # actually flips a flag.
+    from copilot.agent import feature_flags
+
+    if not feature_flags.SCHEMA_RAG_ENABLED:
+        log.info("retrieve_schema: SCHEMA_RAG disabled → full DDL fallback")
+        return {"relevant_schema": get_schema_ddl()}
+
     settings = get_settings()
     question = state["question"]
 

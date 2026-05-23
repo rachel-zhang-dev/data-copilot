@@ -671,7 +671,90 @@ helpers treat as "absent" via `state.get(...)`.
 
 ---
 
-## 13. Glossary (so you do not have to Google mid-read)
+## 13. Week 6 — eval harness and A/B experiments
+
+The agent now has a reproducible way to ask "did week 3 / 4 / 5
+actually help?". The harness lives in
+[`apps/api/copilot/eval/`](../apps/api/copilot/eval) and produces
+committable markdown reports under `docs/eval/`.
+
+### 13.1 Three layers
+
+```
+data/eval/cases.yaml         <- hand-written, ~30 cases, 8 categories
+       |
+       v
+copilot/eval/cases.py        <- strict YAML loader -> typed CaseSpec
+copilot/eval/config.py       <- ExperimentConfig presets
+       |
+       v
+copilot/eval/runner.py       <- load -> invoke -> grade -> aggregate
+copilot/eval/graders/        <- deterministic (regex / substring / row count)
+copilot/eval/experiments/    <- A1 schema_rag, A2 self_healing, A3 dialogue_context
+copilot/eval/reports/        <- markdown rendering
+copilot/eval/__main__.py     <- CLI entrypoint, wired by `dev.sh eval`
+```
+
+### 13.2 Feature flags as the swap mechanism
+
+`copilot.agent.feature_flags` exposes a `with override(...):` context
+manager that flips three module-level booleans (`SCHEMA_RAG_ENABLED`,
+`DIALOGUE_CONTEXT_ENABLED`) and the `RETRY_BUDGET` dict in unison,
+restoring on exit. Production never touches these — they are eval-
+only knobs.
+
+The runner does:
+
+```python
+with feature_flags.override(
+    schema_rag_enabled=cfg.schema_rag_enabled,
+    dialogue_context_enabled=cfg.dialogue_context_enabled,
+    retry_budget=cfg.retry_budget_override,
+):
+    for case in cases:
+        ...
+```
+
+So one Python process can run baseline + treatment back-to-back
+without restart and without flag leakage between them.
+
+### 13.3 Follow-up state injection
+
+A naive eval would replay each follow-up case's setup history
+through real graph invocations — burning LLM calls for turns we
+don't actually want to grade. Instead, the runner pre-populates the
+`dialogue` field with the synthetic history before calling
+`graph.ainvoke`. The agent sees the same context in `generate_sql`
+either way, but only the question we care about consumes LLM budget.
+
+### 13.4 Why deterministic graders only
+
+`copilot.eval.graders.deterministic` runs simple substring / regex
+checks over the agent's output. No LLM judge, no RAGAS:
+
+* Reproducibility: same `(case, run)` -> same score forever.
+* Cost: a full eval run is ~¥1-2; LLM-judge would 2-3x that.
+* Scope: deterministic checks are sufficient to demonstrate
+  comparative methodology, which is the portfolio point.
+
+A future commit can layer LangSmith's `criteria` evaluator on top
+without restructuring; the file slot is reserved.
+
+### 13.5 What the report looks like
+
+Each A/B produces a markdown file like `20260523-091200-schema_rag.md`
+with a summary delta table (success_rate / attempts / latency /
+tokens), a per-category breakdown (10pp+ shifts bolded), and a
+"fixed by treatment" section listing cases the baseline failed and
+the treatment fixed — the most informative evidence in any
+experiment.
+
+See [ADR 0007](decisions/0007-eval-methodology.md) for why we chose
+comparative methodology over standalone runs / RAGAS / LLM-judge.
+
+---
+
+## 14. Glossary (so you do not have to Google mid-read)
 
 | Term | One-liner |
 |------|----------|

@@ -151,6 +151,26 @@ into a single synthetic entry. The threshold is configurable via
 `COMPACTION_THRESHOLD_TOKENS` (default 4000). Per-turn retry
 budgets reset between turns so a follow-up always starts fresh.
 
+### Eval harness (week 6)
+
+A reproducible A/B harness measures whether each Week 3-5 feature
+actually moves the metrics. 32 hand-written cases × 4 metrics ×
+3 A/B experiments yield committable markdown reports under
+[`docs/eval/`](docs/eval/).
+
+```bash
+./scripts/dev.sh eval                          # all 3 experiments
+./scripts/dev.sh eval --experiment schema_rag  # one A/B
+./scripts/dev.sh eval --dry-run                # stdout only
+```
+
+The three experiments are `schema_rag`, `self_healing`, and
+`dialogue_context` — each pairs the production default against a
+"feature off" baseline so the per-feature contribution is visible.
+See [ADR 0007](docs/decisions/0007-eval-methodology.md) for the
+methodology and trade-offs (e.g. why deterministic graders, why not
+RAGAS).
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -162,14 +182,13 @@ budgets reset between turns so a follow-up always starts fresh.
 | 3 ✅ | Schema retrieval with pgvector (multi-table) |
 | 4 ✅ | Refactor to full LangGraph state machine with self-healing |
 | 5 ✅ | Multi-turn dialogue + chat history compaction |
-| 6 | Evaluation set (100 queries) + LangSmith dashboards |
+| 6 ✅ | Evaluation set + 3 A/B experiments |
 | 7 | Human-in-the-loop confirmation for destructive / expensive queries |
 | 8 | Visualisation generation + insight summaries |
 | 9 | Caching layer · cost report · retries with exponential backoff |
 | 10 | Next.js front-end with streaming responses |
 | 11 | Docker production image · Fly.io deploy · monitoring |
 | 12 | Polish, demo video, blog series, simplify onboarding |
-| 13 | Security & multi-tenancy: JWT, RBAC, Postgres-enforced RLS, audit log (see [ADR 0006](docs/decisions/0006-security-and-multi-tenancy.md)) |
 
 ## Project layout
 

@@ -11,6 +11,8 @@
 #   ./scripts/dev.sh index [--force]   # (re)build schema_embeddings
 #   ./scripts/dev.sh ask "..."         # quick one-shot agent invocation
 #   ./scripts/dev.sh ask --cid ID "...". # continue a thread (multi-turn dialogue)
+#   ./scripts/dev.sh eval [--experiment NAME] [--dry-run]
+#                                      # run A/B eval harness (week 6)
 
 set -euo pipefail
 
@@ -133,8 +135,13 @@ async def main() -> None:
 asyncio.run(main())
 PYEOF
     ;;
+  eval)
+    shift || true
+    cd apps/api
+    uv run python -m copilot.eval "$@"
+    ;;
   *)
-    echo "Usage: $0 {up|down|api|test|test-integration|index|ask <question>}"
+    echo "Usage: $0 {up|down|api|test|test-integration|index|ask <question>|eval}"
     exit 1
     ;;
 esac
