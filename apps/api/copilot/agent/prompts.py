@@ -58,11 +58,21 @@ Strict rules:
 GENERATE_SQL_USER_TEMPLATE = """\
 Schema:
 {schema}
-
-Question:
+{history}
+Current question:
 {question}
 
 SQL:
+"""
+
+
+CONVERSATION_HISTORY_TEMPLATE = """\
+
+Previous turns in this conversation (most recent last):
+{turns}
+
+Use the turns above to resolve references like "those", "the same",
+or "and how about X". The current question may build on previous results.
 """
 
 
@@ -137,7 +147,7 @@ When fixing:
 RETRY_SQL_USER_TEMPLATE = """\
 Schema:
 {schema}
-
+{history}
 Original question:
 {question}
 
@@ -148,4 +158,30 @@ The system rejected it with:
 {last_error}
 
 Corrected SQL (#{attempt_no}):
+"""
+
+
+# ---------------------------------------------------------------------------
+# History compaction prompt (week 5)
+# ---------------------------------------------------------------------------
+
+COMPACTION_SYSTEM = """\
+You are a conversation summariser. Compress the multi-turn exchange
+below into ONE short paragraph (4-6 sentences) capturing:
+
+  1. The topics or entities the user has been asking about.
+  2. Key facts already established (numbers, filters, time windows).
+  3. Any constraints the user expressed (e.g. "only Germany", "after 2024").
+
+Do NOT include greetings, apologies, or meta-commentary about the
+conversation itself. Write in third person, present tense. Be terse.
+"""
+
+
+COMPACTION_USER_TEMPLATE = """\
+Conversation to summarise:
+
+{turns}
+
+Summary:
 """

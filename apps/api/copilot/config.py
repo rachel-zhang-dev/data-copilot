@@ -99,6 +99,30 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------- Conversation memory (week 5) ----------
+    compaction_threshold_tokens: int = Field(
+        default=4_000,
+        ge=10,
+        le=60_000,
+        description=(
+            "When the cumulative ``dialogue`` token count exceeds this, "
+            "compact_history_node summarises older turns into one synthetic "
+            "turn. 4k is a comfortable buffer in DeepSeek's 64k context. "
+            "The minimum is set low so unit tests can exercise the trigger "
+            "with tiny dialogues; production deployments should keep the "
+            "default or higher."
+        ),
+    )
+    compaction_keep_last_n: int = Field(
+        default=6,
+        ge=1,
+        le=100,
+        description=(
+            "How many of the most recent turns to keep verbatim when "
+            "compaction triggers. Earlier turns are summarised into one."
+        ),
+    )
+
     # ---------- API ----------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

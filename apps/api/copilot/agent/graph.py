@@ -1,58 +1,51 @@
-"""LangGraph wiring — the week-4 multi-node text-to-SQL agent with
-schema-aware retrieval AND self-healing retries on failure.
+"""LangGraph wiring — the week-5 multi-turn text-to-SQL agent.
 
-Read this file alongside ``nodes.py`` and ``retriever.py`` (what each
-node does) and ``state.py`` (what flows between them). This file is
-purely about the *shape* of the graph; all real work is inside node
-functions.
+Layered on top of week 4's self-healing graph, week 5 adds:
 
-Graph::
+* ``reset_per_turn``       — first node every invocation, clears
+                              turn-local fields so a follow-up is not
+                              poisoned by the previous turn's state.
+* ``append_to_dialogue``   — last node before END for every terminal
+                              path (small_talk / summarize_result /
+                              finalize_error). Records the turn into
+                              the user-facing dialogue list.
+* ``compact_history``      — runs after append_to_dialogue. When the
+                              dialogue exceeds ``compaction_threshold_tokens``
+                              it summarises older turns into one synthetic
+                              entry; otherwise it is a no-op.
 
-                  +----------------+
-                  | classify_intent|
-                  +-------+--------+
-                          |
-              chitchat ---+--- data
-              |                 |
-              v                 v
-        +-----------+    +-------------------+
-        | small_talk|    | retrieve_schema   |  <-- new in week 3
-        +-----+-----+    +-------+-----------+
-              |                  |
-              |                  v
-              |          +---------------+
-              |          |  generate_sql |
-              |          +-------+-------+
-              |                  |
-              |                  v
-              |          +---------------+
-              |          |  validate_sql |  <-- can retry?
-              |          +-------+-------+      loop to generate_sql
-              |        invalid|     |valid
-              |               v     v
-              |     +-----------+ +----------+
-              |     | finalize_ | |execute_  | <-- can retry?
-              |     | error     | |  sql     |     loop to generate_sql
-              |     +-----+-----+ +----+-----+
-              |           ^           |
-              |           | db error  |
-              |           +-----------+
-              |           |  ok
-              |           v
-              |     +---------------+
-              |     | summarize_    |
-              |     |   result      |
-              |     +-------+-------+
-              |             |
-              +------+------+
-                     v
-                    END
+Persistence is wired through ``compile(checkpointer=...)``: each
+``ainvoke`` is keyed by ``thread_id == conversation_id`` so the
+agent automatically loads the prior state and saves the diff after
+every node.
 
-Week 4 closes the retry loop: when ``validate_sql`` or ``execute_sql``
-fail and the per-class retry budget is not exhausted, the router
-sends control back to ``generate_sql`` instead of ``finalize_error``.
-The next ``generate_sql`` invocation sees the failure history in
-``state.attempts`` and switches to a self-healing prompt.
+Graph (week 5)::
+
+         reset_per_turn
+                |
+         classify_intent
+              /        \\
+        chitchat        data
+            |             |
+       small_talk    retrieve_schema
+            |             |
+            |        generate_sql <----+
+            |             |            |retry
+            |        validate_sql -----+
+            |             |            |
+            |        execute_sql ------+
+            |             |
+            |       summarize_result
+            |             |
+            |        finalize_error
+            |             |
+            +------+------+
+                   |
+            append_to_dialogue
+                   |
+            compact_history
+                   |
+                  END
 """
 
 from __future__ import annotations
@@ -63,25 +56,27 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from copilot.agent import nodes
+from copilot.agent.compaction import compact_history_node
+from copilot.agent.dialogue import append_to_dialogue_node, reset_per_turn_node
 from copilot.agent.retriever import retrieve_schema_node
 from copilot.agent.state import AgentState
 
 
-def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]:
+def build_graph(
+    *, checkpointer: Any | None = None
+) -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]:
     """Compile the agent graph.
 
-    Pattern:
-      1. ``StateGraph(<schema>)``
-      2. ``add_node`` for each step
-      3. ``add_edge`` / ``add_conditional_edges`` to wire them
-      4. ``compile()`` returns the runnable, immutable graph
-
-    Building once at startup is materially cheaper than rebuilding per
-    request, which is why ``main.lifespan`` stashes the result on
-    ``app.state``.
+    Args:
+        checkpointer: optional LangGraph checkpoint saver. When
+            provided, the compiled graph supports ``thread_id``-keyed
+            multi-turn conversations. When ``None`` the graph is
+            stateless across invocations (handy in unit tests).
     """
     workflow: StateGraph[AgentState, Any, AgentState, AgentState] = StateGraph(AgentState)
 
+    # ---- nodes ----
+    workflow.add_node("reset_per_turn", reset_per_turn_node)
     workflow.add_node("classify_intent", nodes.classify_intent_node)
     workflow.add_node("small_talk", nodes.small_talk_node)
     workflow.add_node("retrieve_schema", retrieve_schema_node)
@@ -90,11 +85,14 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
     workflow.add_node("execute_sql", nodes.execute_sql_node)
     workflow.add_node("summarize_result", nodes.summarize_result_node)
     workflow.add_node("finalize_error", nodes.finalize_error_node)
+    workflow.add_node("append_to_dialogue", append_to_dialogue_node)
+    workflow.add_node("compact_history", compact_history_node)
 
-    workflow.add_edge(START, "classify_intent")
+    # ---- edges ----
+    workflow.add_edge(START, "reset_per_turn")
+    workflow.add_edge("reset_per_turn", "classify_intent")
 
-    # Intent fan-out: chitchat short-circuits to a friendly reply; data
-    # questions first go through the schema retriever, then SQL gen.
+    # Intent fan-out: chitchat short-circuits past SQL generation.
     workflow.add_conditional_edges(
         "classify_intent",
         nodes.route_after_classify,
@@ -107,8 +105,8 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
     workflow.add_edge("retrieve_schema", "generate_sql")
     workflow.add_edge("generate_sql", "validate_sql")
 
-    # After validation, three outcomes: success -> execute_sql,
-    # retryable error -> generate_sql (loop), terminal -> finalize_error.
+    # After validation: success -> execute, retryable error -> loop,
+    # terminal error -> finalize.
     workflow.add_conditional_edges(
         "validate_sql",
         nodes.route_after_validate,
@@ -119,8 +117,6 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
         },
     )
 
-    # Same three-way fan-out after execution — DB errors are also
-    # eligible for the retry loop.
     workflow.add_conditional_edges(
         "execute_sql",
         nodes.route_after_execute,
@@ -131,8 +127,16 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
         },
     )
 
-    workflow.add_edge("small_talk", END)
-    workflow.add_edge("summarize_result", END)
-    workflow.add_edge("finalize_error", END)
+    # All three terminal "answer-ready" nodes funnel into the
+    # bookkeeping pair (append_to_dialogue, compact_history) before END,
+    # so dialogue is updated regardless of which branch produced the
+    # answer.
+    workflow.add_edge("small_talk", "append_to_dialogue")
+    workflow.add_edge("summarize_result", "append_to_dialogue")
+    workflow.add_edge("finalize_error", "append_to_dialogue")
+    workflow.add_edge("append_to_dialogue", "compact_history")
+    workflow.add_edge("compact_history", END)
 
+    if checkpointer is not None:
+        return workflow.compile(checkpointer=checkpointer)
     return workflow.compile()

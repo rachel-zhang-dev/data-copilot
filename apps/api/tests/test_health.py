@@ -20,6 +20,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr("copilot.main.get_engine", lambda: None)
     monkeypatch.setattr("copilot.main.get_schema_ddl", lambda: "")
     monkeypatch.setattr("copilot.main.dispose_engine", lambda: None)
+    # Week 5: checkpointer also touches Postgres; stub it out for the
+    # health-endpoint smoke test which has no business needing a DB.
+    monkeypatch.setattr("copilot.main.setup_checkpointer", lambda: None)
+    monkeypatch.setattr("copilot.main.dispose_checkpointer", lambda: None)
+    monkeypatch.setattr("copilot.main.get_checkpointer", lambda: None)
 
     from copilot.main import app
 

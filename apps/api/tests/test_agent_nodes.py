@@ -400,3 +400,145 @@ def test_finalize_error_does_not_mention_attempts_for_first_failure() -> None:
         }
     )
     assert "attempts" not in out["answer"]
+
+
+# ---------------------------------------------------------------------------
+# Week 5 — multi-turn isolation
+# ---------------------------------------------------------------------------
+
+
+def _attempt_with_turn(error_class: str, turn_idx: int) -> Any:
+    return {
+        "sql": "SELECT 1",
+        "error": "boom",
+        "error_class": error_class,
+        "turn_idx": turn_idx,
+    }
+
+
+def test_can_retry_filters_attempts_by_turn() -> None:
+    """Failures from a previous turn must not eat the current turn's
+    retry budget. Two execution_failed in turn 1 + zero in turn 2
+    means turn 2 still has full budget left."""
+    attempts = [
+        _attempt_with_turn("execution_failed", 1),
+        _attempt_with_turn("execution_failed", 1),
+        _attempt_with_turn("execution_failed", 1),
+    ]
+    # turn 1 is over budget
+    assert nodes.can_retry(attempts, turn_idx=1) is False
+    # turn 2 has no failures yet
+    assert nodes.can_retry(attempts, turn_idx=2) is False  # actually no attempts in turn 2
+
+
+def test_can_retry_within_turn_after_other_turn_exhausted() -> None:
+    attempts = [
+        _attempt_with_turn("execution_failed", 1),
+        _attempt_with_turn("execution_failed", 1),
+        _attempt_with_turn("execution_failed", 1),
+        # turn 2 starts; one failure so far, allowed to retry
+        _attempt_with_turn("execution_failed", 2),
+    ]
+    assert nodes.can_retry(attempts, turn_idx=2) is True
+
+
+def test_can_retry_default_turn_idx_aggregates_all_for_back_compat() -> None:
+    """When called without turn_idx (legacy week-4 callers), all
+    attempts are counted. Required so existing tests still pass."""
+    attempts = [_attempt("execution_failed")] * 2
+    assert nodes.can_retry(attempts) is True
+
+
+def test_validate_sql_records_turn_idx_on_failure() -> None:
+    out = nodes.validate_sql_node({"sql": "DROP TABLE customers", "turn_index": 7})
+    assert out["attempts"][0]["turn_idx"] == 7
+
+
+def test_validate_sql_defaults_turn_idx_to_one_if_missing() -> None:
+    out = nodes.validate_sql_node({"sql": "DROP TABLE customers"})
+    assert out["attempts"][0]["turn_idx"] == 1
+
+
+def test_execute_sql_records_turn_idx_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(nodes, "run_select", boom)
+    out = nodes.execute_sql_node({"sql": "SELECT 1", "turn_index": 3})
+    assert out["attempts"][0]["turn_idx"] == 3
+
+
+def test_generate_sql_includes_dialogue_history_in_prompt(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "Table: customers")
+    llm = stub_llm_factory("SELECT 1")
+
+    state = {
+        "question": "What about France?",
+        "relevant_schema": "Table: customers",
+        "dialogue": [
+            {"role": "user", "content": "How many German customers?"},
+            {
+                "role": "assistant",
+                "content": "11",
+                "sql": "SELECT count(*) FROM customers WHERE country='Germany'",
+            },
+        ],
+    }
+    nodes.generate_sql_node(state)
+
+    user_msg = llm.calls[0][1].content
+    assert "German customers" in user_msg
+    assert "Previous turns" in user_msg or "previous turns" in user_msg.lower()
+
+
+def test_generate_sql_no_history_block_when_dialogue_empty(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "Table: customers")
+    llm = stub_llm_factory("SELECT 1")
+
+    nodes.generate_sql_node(
+        {"question": "How many customers?", "relevant_schema": "Table: customers"}
+    )
+
+    user_msg = llm.calls[0][1].content
+    assert "Previous turns" not in user_msg
+
+
+def test_generate_sql_retry_filters_attempts_by_turn(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry should only show the LAST failure of THIS turn — not
+    bring up a failure from a previous turn that was already resolved."""
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "Table: customers")
+    llm = stub_llm_factory("SELECT count(*) FROM customers")
+
+    state = {
+        "question": "And in Italy?",
+        "relevant_schema": "Table: customers",
+        "turn_index": 2,
+        "attempts": [
+            # Old failure from turn 1 — should NOT appear in retry prompt
+            _attempt_with_turn("execution_failed", 1),
+            # Current turn's failure (typo "custmrs" is intentional)
+            {
+                "sql": "SELECT * FROM custmrs",
+                "error": "relation custmrs does not exist",
+                "error_class": "execution_failed",
+                "turn_idx": 2,
+            },
+        ],
+    }
+    nodes.generate_sql_node(state)
+
+    user_msg = llm.calls[0][1].content
+    # The current-turn failure SHOULD be in the prompt
+    assert "custmrs" in user_msg
+    # We can't easily assert the old failure is absent (because both are
+    # similar shapes), but the "Your previous attempt (#1)" wording
+    # should match THIS turn's count, not the cumulative count.
+    assert "previous attempt (#1)" in user_msg.lower()

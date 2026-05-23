@@ -568,7 +568,110 @@ naming and typo errors on Northwind.
 
 ---
 
-## 12. Glossary (so you do not have to Google mid-read)
+## 12. Week 5 — multi-turn dialogue and compaction
+
+The Week 4 graph treated each `/ask` as a fresh universe. Week 5
+adds three small bookkeeping nodes that turn it into a real chat:
+
+```
+                   reset_per_turn      <-- runs first
+                          |
+                  classify_intent
+                          ...
+                  summarize_result   small_talk   finalize_error
+                          \             |             /
+                           \            |            /
+                          append_to_dialogue        <-- appends user+assistant
+                                  |
+                          compact_history          <-- summarises old turns if long
+                                  |
+                                 END
+```
+
+### 12.1 Persistence: `PostgresSaver` does the heavy lifting
+
+We `compile(checkpointer=PostgresSaver(pool))` instead of plain
+`compile()`. With that one change, every `ainvoke` keyed on
+`thread_id` automatically loads the prior state and saves the diff
+after each node. We did not write a single line of "load state /
+save state" code. See `copilot/checkpointer.py`.
+
+When debugging:
+
+```sql
+SELECT thread_id, channel_values->'dialogue'
+FROM checkpoints
+ORDER BY created_at DESC LIMIT 5;
+```
+
+You can see exactly what the agent thought a conversation looked
+like at any point in time.
+
+### 12.2 The `dialogue` field and its custom reducer
+
+Two distinct mutation patterns share one field:
+
+* `append_to_dialogue_node` adds `[user_turn, assistant_turn]` per
+  invocation;
+* `compact_history_node` occasionally rewrites the entire list with
+  `[summary_turn, *last_N]`.
+
+The custom `replace_or_append` reducer treats a plain list return as
+append, but recognises the sentinel dict `{"replace": [...]}` as
+"overwrite the field with this list". One reducer, two semantics, no
+extra fields, no `RemoveMessage` plumbing.
+
+### 12.3 Per-turn retry budgets
+
+Without per-turn isolation, a follow-up question could be born into
+"already at retry limit" because a prior turn racked up
+`execution_failed` records. The fix is one extra field on
+`Attempt`:
+
+```python
+class Attempt(TypedDict):
+    sql: str
+    error: str
+    error_class: ErrorClass
+    turn_idx: int   # NEW: which turn this failure belongs to
+```
+
+`can_retry(attempts, turn_idx)` filters by `turn_idx` before
+counting. Failures from prior turns remain in the list for telemetry
+but no longer affect routing.
+
+### 12.4 Compaction is opt-in by token budget
+
+`count_tokens` uses a deliberately cheap heuristic (chars/4). We
+compact only when the budget is exceeded; below the threshold,
+`compact_history_node` is a zero-cost no-op. When triggered the
+older turns get summarised into one synthetic
+`[Earlier in this conversation] ...` turn while the most recent N
+turns stay verbatim — best of both worlds.
+
+If the LLM call inside the summariser fails, we fall back to hard
+truncation (last N verbatim, no summary). The conversation continues
+to work; only the early context is silently lost.
+
+### 12.5 What `reset_per_turn` clears (and what it doesn't)
+
+It clears: `intent`, `relevant_schema`, `sql`, `sql_result`,
+`row_count`, `error`, `answer`. Sets `turn_index` to the new turn
+number.
+
+Notably absent:
+
+* `messages`, `dialogue` — these persist; they are the conversation.
+* `attempts` — kept for telemetry; the per-turn `turn_idx` filter
+  inside `can_retry` makes earlier failures inert without us having
+  to delete them.
+
+Returning `None` for a key sets the field to `None`, which our
+helpers treat as "absent" via `state.get(...)`.
+
+---
+
+## 13. Glossary (so you do not have to Google mid-read)
 
 | Term | One-liner |
 |------|----------|

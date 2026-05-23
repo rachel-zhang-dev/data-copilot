@@ -13,13 +13,15 @@ Reading guide
 * ``/health``            — cheap probe for monitoring & uptime checks.
 * ``/ask``               — the only "real" endpoint right now; takes a
   natural-language question and returns an answer (plus, since week 2,
-  the SQL that was run and the rows that came back).
+  the SQL that was run and the rows that came back; since week 5, an
+  optional ``conversation_id`` for multi-turn dialogues).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -29,6 +31,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from copilot.agent import build_graph
+from copilot.checkpointer import (
+    dispose_checkpointer,
+    get_checkpointer,
+    setup_checkpointer,
+)
 from copilot.config import get_settings
 from copilot.db import dispose_engine, get_engine, get_schema_ddl
 
@@ -63,27 +70,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
          Doing this here turns "Postgres is down" into a startup error
          (visible in logs) instead of a confusing 500 on the first
          /ask request.
-      3. Build the LangGraph agent once and stash it on ``app.state``.
+      3. Initialise the LangGraph PostgresSaver and ensure its tables
+         exist (idempotent ``CREATE TABLE IF NOT EXISTS``).
+      4. Build the LangGraph agent once with the checkpointer attached
+         and stash it on ``app.state``.
 
     Shutdown:
-      * Dispose the connection pool cleanly so Postgres does not log
-        spurious connection-reset warnings.
+      * Dispose the SQLAlchemy pool and the checkpointer pool cleanly.
     """
     _configure_langsmith()
     get_engine()
     schema = get_schema_ddl()
     log.info("schema cache warmed (%d chars)", len(schema))
-    app.state.graph = build_graph()
+    setup_checkpointer()
+    app.state.graph = build_graph(checkpointer=get_checkpointer())
     try:
         yield
     finally:
+        dispose_checkpointer()
         dispose_engine()
 
 
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.2.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -108,6 +119,10 @@ app.add_middleware(
 
 class AskRequest(BaseModel):
     question: str
+    # When omitted, the server allocates a fresh UUID and the call
+    # starts a new conversation. Pass it back on subsequent calls to
+    # continue the same thread.
+    conversation_id: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -120,13 +135,17 @@ class AskResponse(BaseModel):
     """
 
     answer: str
+    # Always set, including when the caller did not supply one.
+    # Returned so the caller can use it for the next turn.
+    conversation_id: str
+    # 1-based index of THIS turn within the conversation.
+    turn_index: int
     sql: str | None = None
     rows: list[dict[str, Any]] | None = None
     row_count: int | None = None
     error: str | None = None
-    # Number of LLM attempts the agent made on the SQL pipeline.
-    # 1 means first-shot success; >1 means self-healing kicked in.
-    # 0 happens for chitchat questions that never hit the SQL path.
+    # Number of LLM SQL-generation calls in THIS turn (1 = first-shot
+    # success). 0 happens for chitchat turns that never hit SQL.
     attempts: int = 1
     # Per-attempt history (sql + error + class). Off by default to keep
     # the response small; populate when ``?debug=true`` is set.
@@ -152,31 +171,36 @@ async def health() -> dict[str, str]:
 async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     """Run the agent on a single user question.
 
-    Flow:
-        1. Pull the pre-compiled graph off ``app.state`` (set in ``lifespan``).
-        2. Invoke the graph asynchronously — this is the call that may
-           reach out to the LLM and the database.
-        3. Wrap the result in a typed response model.
+    Multi-turn dialogue is opt-in via ``conversation_id``. Same id =
+    continuation of the same thread (history loaded from Postgres);
+    omitted or new id = fresh conversation.
 
     Set ``?debug=true`` to also receive ``attempts_history`` — the full
     list of failed (sql, error) pairs the self-healing loop walked
-    through. Off by default because it can be large.
+    through.
     """
     graph = app.state.graph
-    result = await graph.ainvoke({"question": req.question})
+    conversation_id = req.conversation_id or str(uuid.uuid4())
 
-    # Each entry in ``attempts`` is a recorded FAILURE; the total number
-    # of LLM SQL-generation calls is therefore ``failures + 1`` whenever
-    # the SQL pipeline ran at all (i.e. ``sql`` is set). 0 for chitchat.
+    # LangGraph keys persistence on ``thread_id``; we treat
+    # conversation_id and thread_id as synonyms.
+    config = {"configurable": {"thread_id": conversation_id}}
+    result = await graph.ainvoke({"question": req.question}, config=config)
+
     failures = result.get("attempts") or []
-    attempts_count = (len(failures) + 1) if result.get("sql") else 0
+    turn_idx = result.get("turn_index") or 1
+    # Count failures recorded during THIS turn only.
+    this_turn_failures = [f for f in failures if f.get("turn_idx", 0) == turn_idx]
+    attempts_count = (len(this_turn_failures) + 1) if result.get("sql") else 0
 
     return AskResponse(
         answer=result.get("answer", ""),
+        conversation_id=conversation_id,
+        turn_index=turn_idx,
         sql=result.get("sql"),
         rows=result.get("sql_result"),
         row_count=result.get("row_count"),
         error=result.get("error"),
         attempts=attempts_count,
-        attempts_history=list(failures) if debug else None,
+        attempts_history=list(this_turn_failures) if debug else None,
     )

@@ -123,6 +123,34 @@ own retry budget (2 for execution failures, 1 for safety violations,
 The number of attempts is exposed in `AskResponse.attempts`. Pass
 `?debug=true` to also receive the per-attempt failure history.
 
+### Multi-turn dialogue
+
+Since week 5, the agent supports follow-up questions. Pass an
+existing `conversation_id` to continue a thread; omit it to start a
+fresh one (the server allocates a UUID and returns it). State is
+persisted to Postgres via LangGraph's `PostgresSaver`, so
+conversations survive process restarts and span multiple replicas
+behind a load balancer. See [ADR 0005](docs/decisions/0005-conversation-persistence.md).
+
+```bash
+# First turn: server allocates the conversation_id and returns it
+curl -X POST http://localhost:8000/ask -H 'Content-Type: application/json' \
+    -d '{"question": "How many customers are based in Germany?"}'
+# => {"conversation_id": "abc-123", "turn_index": 1, "answer": "11", ...}
+
+# Follow-up: the agent can now resolve "And France?"
+curl -X POST http://localhost:8000/ask -H 'Content-Type: application/json' \
+    -d '{"question": "And France?", "conversation_id": "abc-123"}'
+# => {"conversation_id": "abc-123", "turn_index": 2,
+#     "sql": "SELECT count(*) FROM customers WHERE country = 'France' LIMIT 100", ...}
+```
+
+When a conversation gets long enough to risk overflowing the LLM's
+context window, a `compact_history_node` summarises the older turns
+into a single synthetic entry. The threshold is configurable via
+`COMPACTION_THRESHOLD_TOKENS` (default 4000). Per-turn retry
+budgets reset between turns so a follow-up always starts fresh.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -133,7 +161,7 @@ The number of attempts is exposed in `AskResponse.attempts`. Pass
 | 2 ✅ | Single-table text-to-SQL baseline (no RAG yet) |
 | 3 ✅ | Schema retrieval with pgvector (multi-table) |
 | 4 ✅ | Refactor to full LangGraph state machine with self-healing |
-| 5 | Multi-turn dialogue + chat history compaction |
+| 5 ✅ | Multi-turn dialogue + chat history compaction |
 | 6 | Evaluation set (100 queries) + LangSmith dashboards |
 | 7 | Human-in-the-loop confirmation for destructive / expensive queries |
 | 8 | Visualisation generation + insight summaries |

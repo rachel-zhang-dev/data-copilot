@@ -1,6 +1,6 @@
 # Architecture
 
-> Last updated: week 4 — self-healing retry loop on top of the week-3 RAG retriever.
+> Last updated: week 5 — multi-turn dialogue + chat history compaction with a Postgres checkpointer.
 
 ## High-level diagram
 
@@ -17,15 +17,19 @@ flowchart TB
 
     subgraph Agent["LangGraph Agent"]
         direction TB
+        N0["reset_per_turn<br/>(week 5)"]
         N1["classify_intent"]
         N1b["small_talk"]
         N2["retrieve_schema<br/>(pgvector + FK 1-hop)"]
-        N3["generate_sql<br/>(first try OR self-healing retry)"]
+        N3["generate_sql<br/>(first try / retry / follow-up)"]
         N4{"validate_sql"}
         N5{"execute_sql"}
         N6["summarize_result"]
         N7["finalize_error"]
+        N8["append_to_dialogue<br/>(week 5)"]
+        N9["compact_history<br/>(week 5)"]
 
+        N0 --> N1
         N1 -- chitchat --> N1b
         N1 -- data --> N2
         N2 --> N3
@@ -36,6 +40,10 @@ flowchart TB
         N4 -- "invalid + exhausted" --> N7
         N5 -- "db error + budget left" --> N3
         N5 -- "db error + exhausted" --> N7
+        N1b --> N8
+        N6 --> N8
+        N7 --> N8
+        N8 --> N9
     end
 
     subgraph Data["Data layer"]
@@ -74,7 +82,7 @@ flowchart TB
 | Vector store | pgvector inside Postgres | Co-locating data and embeddings simplifies ops; same connection pool. |
 | Observability | LangSmith | Traces, evaluations, and regression dashboards. |
 
-## What is implemented today (end of week 4)
+## What is implemented today (end of week 5)
 
 | Concern | Status | Notes |
 |---|---|---|
@@ -83,14 +91,15 @@ flowchart TB
 | FK graph introspection | ✅ | `db.get_foreign_keys()` — used for 1-hop expansion |
 | Schema embeddings | ✅ | `BAAI/bge-m3` via SiliconFlow → pgvector `schema_embeddings` (HNSW) |
 | Schema retrieval (RAG) | ✅ | `retrieve_schema_node`: top-K vector search + named-table fast path + FK expansion + full-schema fallback |
-| SQL generation | ✅ | `generate_sql_node`; switches between first-try and self-healing prompts |
+| SQL generation | ✅ | `generate_sql_node`; switches between first-try and self-healing prompts; injects dialogue history for follow-ups |
 | SQL safety / row cap | ✅ | sqlglot AST validation + auto `LIMIT` (see [ADR 0002](decisions/0002-sql-safety.md)) |
 | SQL execution | ✅ | SQLAlchemy + psycopg3, sync pool managed in lifespan |
-| **Self-healing loop** | ✅ | Per-class retry budget; `validate_sql` / `execute_sql` failures loop back to `generate_sql` until budget is exhausted (see [ADR 0004](decisions/0004-self-healing-policy.md)) |
+| Self-healing loop | ✅ | Per-class, **per-turn** retry budget; failures loop back to `generate_sql` until budget exhausts (see [ADR 0004](decisions/0004-self-healing-policy.md)) |
 | Result summarisation | ✅ | `summarize_result_node`; rows JSON-previewed to LLM |
 | Error finalisation | ✅ | Deterministic templates per error class; mentions attempt count |
-| Multi-turn dialogue | ⏳ week 5 | state already has `messages` with reducer in place |
-| Eval harness | ⏳ week 6 | will A/B retrieval + retry policies on a fixed question set |
+| **Multi-turn dialogue** | ✅ | `conversation_id` keys a thread; LangGraph `PostgresSaver` persists state across calls (see [ADR 0005](decisions/0005-conversation-persistence.md)) |
+| **History compaction** | ✅ | `compact_history_node` summarises older turns when dialogue tokens exceed threshold |
+| Eval harness | ⏳ week 6 | will A/B retrieval + retry + dialogue policies on a fixed question set |
 
 ## Why LangGraph rather than plain LangChain?
 

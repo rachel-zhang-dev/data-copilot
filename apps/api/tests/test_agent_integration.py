@@ -31,6 +31,21 @@ def graph():
     return build_graph()
 
 
+@pytest.fixture()
+def stateful_graph():
+    """Per-test fresh graph + in-memory checkpointer.
+
+    Uses ``InMemorySaver`` rather than ``PostgresSaver`` so multi-turn
+    tests have isolated state and don't pollute the real database.
+    The graph code path is identical regardless of checkpointer
+    backend — we are testing the agent flow, not langgraph's persistence
+    plumbing (which langgraph itself tests upstream).
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return build_graph(checkpointer=InMemorySaver())
+
+
 def _skip_without_real_credentials() -> None:
     """Hard-skip when API credentials are still the placeholder values.
     The integration suite is opt-in and should never silently pass on
@@ -183,3 +198,74 @@ async def test_destructive_request_terminates_after_budget(graph) -> None:
     assert result["answer"]
     # If any sql was generated and tried, attempts must be small
     assert len(result.get("attempts") or []) <= 2
+
+
+# ---------------------------------------------------------------------------
+# Week 5: multi-turn dialogue
+# ---------------------------------------------------------------------------
+
+
+async def test_multi_turn_followup_resolves_pronoun(stateful_graph) -> None:
+    """The textbook follow-up: ask about Germany, then "And France?"
+    The second turn must produce SQL for France even though the
+    question never mentions customers or country.
+    """
+    _skip_without_real_credentials()
+    config = {"configurable": {"thread_id": "test-followup"}}
+
+    # Turn 1
+    r1 = await stateful_graph.ainvoke(
+        {"question": "How many customers are based in Germany?"}, config=config
+    )
+    assert r1.get("error") is None
+    assert "customers" in (r1.get("sql") or "").lower()
+    assert "germany" in (r1.get("sql") or "").lower()
+    assert r1["turn_index"] == 1
+
+    # Turn 2 — the agent has to use Turn 1's context
+    r2 = await stateful_graph.ainvoke({"question": "And France?"}, config=config)
+    assert r2.get("error") is None
+    sql2 = (r2.get("sql") or "").lower()
+    assert "france" in sql2, f"follow-up did not resolve to France: {sql2}"
+    assert "customers" in sql2, f"follow-up should still target customers table: {sql2}"
+    assert r2["turn_index"] == 2
+    # Dialogue accumulated both turns: 4 entries (user + assistant) x 2.
+    assert len(r2.get("dialogue") or []) == 4
+
+
+async def test_independent_conversations_do_not_leak(stateful_graph) -> None:
+    """Two different thread_ids must produce independent dialogues."""
+    _skip_without_real_credentials()
+    cfg_a = {"configurable": {"thread_id": "test-iso-a"}}
+    cfg_b = {"configurable": {"thread_id": "test-iso-b"}}
+
+    ra = await stateful_graph.ainvoke({"question": "How many customers in Germany?"}, config=cfg_a)
+    rb = await stateful_graph.ainvoke({"question": "How many products are there?"}, config=cfg_b)
+
+    assert ra.get("error") is None and rb.get("error") is None
+    # Each conversation has exactly its own pair (turn 1, no leakage).
+    assert len(ra.get("dialogue") or []) == 2
+    assert len(rb.get("dialogue") or []) == 2
+    # And the SQLs target different tables, demonstrating isolation.
+    assert "customers" in (ra.get("sql") or "").lower()
+    assert "products" in (rb.get("sql") or "").lower()
+
+
+async def test_chitchat_followup_after_data(stateful_graph) -> None:
+    """Mixing intents in one conversation: data, then chitchat, then
+    data again. Ensures classify_intent and reset_per_turn keep their
+    composure across turns."""
+    _skip_without_real_credentials()
+    config = {"configurable": {"thread_id": "test-mixed"}}
+
+    r1 = await stateful_graph.ainvoke({"question": "How many customers are there?"}, config=config)
+    r2 = await stateful_graph.ainvoke({"question": "Cool, thanks!"}, config=config)
+    r3 = await stateful_graph.ainvoke({"question": "And how many products?"}, config=config)
+
+    assert r1.get("sql") is not None  # data
+    assert r2.get("sql") is None  # chitchat
+    assert r3.get("sql") is not None  # data
+    assert "products" in (r3.get("sql") or "").lower()
+    # 3 turns → 6 dialogue entries
+    assert len(r3.get("dialogue") or []) == 6
+    assert r3["turn_index"] == 3

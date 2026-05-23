@@ -22,8 +22,10 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from copilot.agent.dialogue import format_dialogue_for_prompt
 from copilot.agent.prompts import (
     CLASSIFY_INTENT_SYSTEM,
+    CONVERSATION_HISTORY_TEMPLATE,
     GENERATE_SQL_SYSTEM,
     GENERATE_SQL_USER_TEMPLATE,
     RETRY_SQL_SYSTEM,
@@ -79,26 +81,41 @@ def classify_error(error: str) -> ErrorClass:
     return "fatal"
 
 
-def can_retry(attempts: list[Attempt]) -> bool:
+def _attempts_for_turn(attempts: list[Attempt], turn_idx: int | None) -> list[Attempt]:
+    """Filter attempts to the requested turn.
+
+    Falls back to "all attempts" when turn_idx is missing — preserves
+    the week-4 single-turn semantics for unit tests that don't supply
+    turn_index.
+    """
+    if turn_idx is None:
+        return list(attempts)
+    return [a for a in attempts if a.get("turn_idx", 0) == turn_idx]
+
+
+def can_retry(attempts: list[Attempt], turn_idx: int | None = None) -> bool:
     """Return True if we should loop back to ``generate_sql``.
 
     Decision rule:
-      * No prior attempts => no retry decision to make (caller is past
-        the first failure).
+      * No prior attempts in this turn => no retry decision to make.
       * Look up the budget for the LATEST failure's class.
-      * Allow retry while ``len(attempts) <= budget``. Equality is
+      * Allow retry while ``len(this_turn) <= budget``. Equality is
         included because budget is the *count of retries on top of
-        the initial attempt*, and the next loop will increase the
-        attempts list to ``budget + 1`` in worst case.
-      * Also enforce ``HARD_RETRY_CEILING`` so a misconfigured budget
-        cannot cause runaway loops.
+        the initial attempt*.
+      * Enforce ``HARD_RETRY_CEILING`` per turn so a misconfigured
+        budget cannot cause runaway loops.
+
+    The ``turn_idx`` argument was added in week 5: each conversation
+    turn has its own retry budget. Without filtering, follow-up
+    questions would inherit failures from earlier turns.
     """
-    if not attempts:
+    this_turn = _attempts_for_turn(attempts, turn_idx)
+    if not this_turn:
         return False
-    if len(attempts) >= HARD_RETRY_CEILING:
+    if len(this_turn) >= HARD_RETRY_CEILING:
         return False
-    last_class = attempts[-1]["error_class"]
-    return len(attempts) <= RETRY_BUDGET.get(last_class, 0)
+    last_class = this_turn[-1]["error_class"]
+    return len(this_turn) <= RETRY_BUDGET.get(last_class, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -180,36 +197,47 @@ def small_talk_node(state: AgentState) -> dict[str, Any]:
 def generate_sql_node(state: AgentState) -> dict[str, Any]:
     """Ask the LLM to translate the question into a SELECT statement.
 
-    On the first call this looks like the week-2 behaviour. On a retry
-    (i.e. ``state["attempts"]`` is non-empty), we switch to the
-    self-healing prompt that includes the previously-failed SQL plus
-    the error message, so the LLM can produce a *correction*.
+    Three modes:
+      * First attempt of a NEW turn — week-2 prompt + dialogue history.
+      * Retry within the SAME turn (attempts for this turn exist) —
+        week-4 self-healing prompt + dialogue history + last failure.
+      * Follow-up question (new turn but ``dialogue`` non-empty) —
+        treated like a first attempt; the dialogue context lets the
+        LLM resolve "those" / "and how about X" references.
 
     We pull the schema lazily so unit tests can patch ``get_schema_ddl``
     without standing up Postgres.
     """
     schema = state.get("relevant_schema") or get_schema_ddl()
-    attempts = state.get("attempts", [])
+    turn_idx = state.get("turn_index")
+    this_turn_attempts = _attempts_for_turn(state.get("attempts", []), turn_idx)
 
-    if attempts:
-        last = attempts[-1]
+    history_block = _format_history_block(state.get("dialogue") or [])
+
+    if this_turn_attempts:
+        last = this_turn_attempts[-1]
         sys_msg = RETRY_SQL_SYSTEM
         user_msg = RETRY_SQL_USER_TEMPLATE.format(
             schema=schema,
+            history=history_block,
             question=state["question"],
             last_sql=last["sql"],
             last_error=last["error"],
-            attempt_no_prev=len(attempts),
-            attempt_no=len(attempts) + 1,
+            attempt_no_prev=len(this_turn_attempts),
+            attempt_no=len(this_turn_attempts) + 1,
         )
         log.info(
             "generate_sql RETRY #%d (last_class=%s)",
-            len(attempts) + 1,
+            len(this_turn_attempts) + 1,
             last["error_class"],
         )
     else:
         sys_msg = GENERATE_SQL_SYSTEM
-        user_msg = GENERATE_SQL_USER_TEMPLATE.format(schema=schema, question=state["question"])
+        user_msg = GENERATE_SQL_USER_TEMPLATE.format(
+            schema=schema,
+            history=history_block,
+            question=state["question"],
+        )
 
     llm = get_llm(temperature=0.0)
     response = llm.invoke(
@@ -231,11 +259,29 @@ def generate_sql_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+def _format_history_block(dialogue: list[Any]) -> str:
+    """Build the optional ``{history}`` block that goes into the
+    SQL-generation prompt. Empty string when there is no prior
+    dialogue, otherwise the formatted CONVERSATION_HISTORY_TEMPLATE."""
+    if not dialogue:
+        return ""
+    rendered = format_dialogue_for_prompt(dialogue)
+    if not rendered:
+        return ""
+    return CONVERSATION_HISTORY_TEMPLATE.format(turns=rendered)
+
+
 def validate_sql_node(state: AgentState) -> dict[str, Any]:
     """Run the safety policy. On failure, record ``error`` and append
     a record to ``attempts`` so the router can decide whether to retry
-    and so the next ``generate_sql`` call can see what went wrong."""
+    and so the next ``generate_sql`` call can see what went wrong.
+
+    The recorded Attempt is tagged with the current ``turn_index`` so
+    retries in this turn do not see budget being eaten by failures
+    from previous turns of the same conversation.
+    """
     settings = get_settings()
+    turn_idx = state.get("turn_index", 1)
     try:
         rewritten = validate_and_rewrite(state["sql"], max_rows=settings.sql_max_rows)
     except SqlSafetyError as exc:
@@ -247,6 +293,7 @@ def validate_sql_node(state: AgentState) -> dict[str, Any]:
                     sql=state["sql"],
                     error=str(exc),
                     error_class="unsafe_sql",
+                    turn_idx=turn_idx,
                 )
             ],
         }
@@ -260,6 +307,7 @@ def execute_sql_node(state: AgentState) -> dict[str, Any]:
     ``validate_sql_node`` does for safety failures, so the retry loop
     has the same shape regardless of which step blew up.
     """
+    turn_idx = state.get("turn_index", 1)
     try:
         rows = run_select(state["sql"])
     except Exception as exc:
@@ -271,6 +319,7 @@ def execute_sql_node(state: AgentState) -> dict[str, Any]:
                     sql=state["sql"],
                     error=str(exc),
                     error_class="execution_failed",
+                    turn_idx=turn_idx,
                 )
             ],
         }
@@ -310,7 +359,10 @@ def finalize_error_node(state: AgentState) -> dict[str, Any]:
     point-of-failure.
     """
     err = state.get("error") or "unknown_error"
-    n = len(state.get("attempts", []))
+    # Only count attempts from this turn — earlier turns' failures are
+    # not relevant to the user-facing "I tried N times" message.
+    this_turn = _attempts_for_turn(state.get("attempts", []), state.get("turn_index"))
+    n = len(this_turn)
     suffix = f" (after {n} attempts)" if n > 1 else ""
 
     if err.startswith("unsafe_sql:"):
@@ -350,10 +402,13 @@ def route_after_validate(state: AgentState) -> str:
       * No error          -> proceed to ``execute_sql``.
       * Error + can retry -> loop back to ``generate_sql``.
       * Error + budget exhausted -> ``finalize_error``.
+
+    Budget is per-turn; ``can_retry`` filters attempts by
+    ``state.turn_index`` so prior-turn failures do not count.
     """
     if not state.get("error"):
         return "execute_sql"
-    if can_retry(state.get("attempts", [])):
+    if can_retry(state.get("attempts", []), state.get("turn_index")):
         return "generate_sql"
     return "finalize_error"
 
@@ -362,6 +417,6 @@ def route_after_execute(state: AgentState) -> str:
     """Same shape as ``route_after_validate`` but after DB execution."""
     if not state.get("error"):
         return "summarize_result"
-    if can_retry(state.get("attempts", [])):
+    if can_retry(state.get("attempts", []), state.get("turn_index")):
         return "generate_sql"
     return "finalize_error"
