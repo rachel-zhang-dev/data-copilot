@@ -155,3 +155,7 @@ def cli(argv: list[str] | None = None) -> int:
     written = index_schema(force=force)
     log.info("done. %d tables indexed.", written)
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
