@@ -17,6 +17,7 @@ preserve history.
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph.message import add_messages
@@ -24,6 +25,36 @@ from langgraph.graph.message import add_messages
 Intent = Literal["data", "chitchat"]
 """Top-level intent. Decided by ``classify_intent_node`` and used by
 ``route_after_classify`` to branch the graph."""
+
+
+ErrorClass = Literal["unsafe_sql", "execution_failed", "fatal"]
+"""Categorisation of a node failure. Used by ``can_retry`` to decide
+whether the agent loops back to ``generate_sql`` or terminates with a
+user-facing error.
+
+* ``unsafe_sql``        — sqlglot rejected the SQL (DROP / write op /
+                          stacked statements). LLM rewrite often fixes
+                          a misread of the question.
+* ``execution_failed``  — sqlglot accepted the SQL but Postgres did
+                          not (typo in column / table name, bad JOIN
+                          condition). LLM is excellent at fixing these
+                          when shown the error message.
+* ``fatal``             — anything else (network, programmer error,
+                          internal exception). We do not retry.
+"""
+
+
+class Attempt(TypedDict):
+    """One pass through ``generate_sql -> validate_sql -> execute_sql``.
+
+    Each failed attempt appends a record to ``state.attempts`` so the
+    next ``generate_sql`` call can see what was tried and why it
+    failed, and so routers can count failures by class.
+    """
+
+    sql: str
+    error: str
+    error_class: ErrorClass
 
 
 class AgentState(TypedDict, total=False):
@@ -62,10 +93,19 @@ class AgentState(TypedDict, total=False):
     cheaply)."""
 
     error: str
-    """Error message if any node fails (used by the self-healing loop)."""
+    """Error message of the LATEST failure. ``generate_sql`` clears it
+    on retry, so routers can rely on a non-empty value to mean
+    'something went wrong in the run that just finished'."""
+
+    attempts: Annotated[list[Attempt], operator.add]
+    """Append-only history of failed attempts. Reducer is
+    ``operator.add`` so any node returning ``{"attempts": [Attempt(...)]}``
+    gets concatenated rather than overwritten. The list also serves as
+    the retry counter — see ``can_retry`` in ``nodes.py``."""
 
     retry_count: int
-    """How many times we have retried after an error."""
+    """Legacy field from week 2; superseded by ``attempts``. Kept for
+    backwards compatibility with any external observer that read it."""
 
     # ---------- Outputs (read by the caller) ----------
     answer: str

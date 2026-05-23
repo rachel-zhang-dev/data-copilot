@@ -124,6 +124,13 @@ class AskResponse(BaseModel):
     rows: list[dict[str, Any]] | None = None
     row_count: int | None = None
     error: str | None = None
+    # Number of LLM attempts the agent made on the SQL pipeline.
+    # 1 means first-shot success; >1 means self-healing kicked in.
+    # 0 happens for chitchat questions that never hit the SQL path.
+    attempts: int = 1
+    # Per-attempt history (sql + error + class). Off by default to keep
+    # the response small; populate when ``?debug=true`` is set.
+    attempts_history: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +149,7 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask(req: AskRequest) -> AskResponse:
+async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     """Run the agent on a single user question.
 
     Flow:
@@ -150,13 +157,26 @@ async def ask(req: AskRequest) -> AskResponse:
         2. Invoke the graph asynchronously — this is the call that may
            reach out to the LLM and the database.
         3. Wrap the result in a typed response model.
+
+    Set ``?debug=true`` to also receive ``attempts_history`` — the full
+    list of failed (sql, error) pairs the self-healing loop walked
+    through. Off by default because it can be large.
     """
     graph = app.state.graph
     result = await graph.ainvoke({"question": req.question})
+
+    # Each entry in ``attempts`` is a recorded FAILURE; the total number
+    # of LLM SQL-generation calls is therefore ``failures + 1`` whenever
+    # the SQL pipeline ran at all (i.e. ``sql`` is set). 0 for chitchat.
+    failures = result.get("attempts") or []
+    attempts_count = (len(failures) + 1) if result.get("sql") else 0
+
     return AskResponse(
         answer=result.get("answer", ""),
         sql=result.get("sql"),
         rows=result.get("sql_result"),
         row_count=result.get("row_count"),
         error=result.get("error"),
+        attempts=attempts_count,
+        attempts_history=list(failures) if debug else None,
     )

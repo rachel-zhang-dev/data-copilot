@@ -110,6 +110,19 @@ The retrieval index is built automatically the first time you run
 ./scripts/dev.sh index --check   # inspect current state, no writes
 ```
 
+### Self-healing SQL
+
+Since week 4, when generated SQL fails — either because the safety
+layer rejected it (`unsafe_sql`) or because Postgres errored out
+during execution (`execution_failed`) — the agent loops back to
+`generate_sql` with the failed SQL and the error message in the
+prompt, and the model takes another shot. Each error class has its
+own retry budget (2 for execution failures, 1 for safety violations,
+0 for everything else); see [ADR 0004](docs/decisions/0004-self-healing-policy.md).
+
+The number of attempts is exposed in `AskResponse.attempts`. Pass
+`?debug=true` to also receive the per-attempt failure history.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -119,7 +132,7 @@ The retrieval index is built automatically the first time you run
 | 1 ✅ | Project scaffold, environment, hello-world LangGraph node |
 | 2 ✅ | Single-table text-to-SQL baseline (no RAG yet) |
 | 3 ✅ | Schema retrieval with pgvector (multi-table) |
-| 4 | Refactor to full LangGraph state machine with self-healing |
+| 4 ✅ | Refactor to full LangGraph state machine with self-healing |
 | 5 | Multi-turn dialogue + chat history compaction |
 | 6 | Evaluation set (100 queries) + LangSmith dashboards |
 | 7 | Human-in-the-loop confirmation for destructive / expensive queries |

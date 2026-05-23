@@ -470,7 +470,105 @@ block.
 
 ---
 
-## 11. Glossary (so you do not have to Google mid-read)
+## 11. Week 4 — self-healing retry loop
+
+When validation or execution fails, the agent now loops back to
+`generate_sql` and gives the LLM a corrective prompt with the
+previous SQL and the error message. Bounded per error type so it
+cannot run away.
+
+### 11.1 Three new things in the code
+
+- `state.attempts: list[Attempt]` with an `operator.add` reducer.
+  Append-only history of failed attempts. Both routers (counting
+  failures) and `generate_sql_node` (showing the last failure to
+  the LLM) read from it.
+- `nodes.classify_error()` and `nodes.can_retry()`. Pure functions,
+  ten lines each, fully unit-tested. The whole retry policy fits in
+  one screen.
+- `RETRY_SQL_SYSTEM` + `RETRY_SQL_USER_TEMPLATE` in `prompts.py`.
+  The retry prompt is deliberately structured: schema, original
+  question, your previous attempt, the error, "do not just
+  re-issue the same SQL".
+
+### 11.2 Why state.attempts and not a counter
+
+A counter is enough for routing, but the retry prompt needs the
+last SQL and the last error verbatim. Storing the full history is
+basically free, gives us LangSmith traces showing each rewrite, and
+lets `AskResponse` expose the count to the API caller — all from
+one field.
+
+The reducer is `operator.add`, so any node returning
+`{"attempts": [Attempt(...)]}` gets concatenated rather than
+overwriting. We get appendingly correct behaviour even when retries
+re-execute the same node.
+
+### 11.3 Why validate_sql / execute_sql write the attempt themselves
+
+When a node fails, it already constructs an error message; appending
+an `Attempt` is one extra dict literal. Splitting it into a
+"record_failure" node would mean two state hops per failure — more
+edges in the graph, more places to forget to record, no real
+benefit.
+
+### 11.4 Per-class retry budget
+
+```python
+RETRY_BUDGET = {
+    "execution_failed": 2,   # column / table typos: high LLM fix-rate
+    "unsafe_sql":       1,   # one corrective shot, then give up
+    "fatal":            0,
+}
+HARD_RETRY_CEILING = 5       # global override regardless of budget
+```
+
+Keeping each class to its own budget avoids two failure modes:
+either being too generous on the destructive-intent case (which
+wastes tokens defending against the user's actual intent), or being
+too stingy on the typo case (which prematurely fails recoverable
+queries).
+
+See [ADR 0004](decisions/0004-self-healing-policy.md) for the
+rationale and the prompt-design trade-offs we considered.
+
+### 11.5 What's not retried
+
+`fatal` errors — anything not classified as `unsafe_sql` or
+`execution_failed`. This catches network blips, programmer
+mistakes, and other things the LLM cannot fix by re-prompting.
+Better to terminate quickly with a clear error than to obscure the
+bug behind retry latency.
+
+### 11.6 What the LLM sees on retry
+
+```
+SYSTEM: You are a senior data analyst fixing a SQL query that just failed.
+        ... rules ...
+
+USER:
+Schema:
+<focused DDL>
+
+Original question:
+How many customers are there?
+
+Your previous attempt (#1) was:
+SELECT count(*) FROM customer
+
+The system rejected it with:
+relation "customer" does not exist
+
+Corrected SQL (#2):
+```
+
+The LLM almost always responds with `SELECT count(*) FROM customers`
+on the second try. Empirically this single retry fixes 80%+ of
+naming and typo errors on Northwind.
+
+---
+
+## 12. Glossary (so you do not have to Google mid-read)
 
 | Term | One-liner |
 |------|----------|

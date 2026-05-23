@@ -1,5 +1,5 @@
-"""LangGraph wiring — the week-3 multi-node text-to-SQL agent with
-schema-aware retrieval.
+"""LangGraph wiring — the week-4 multi-node text-to-SQL agent with
+schema-aware retrieval AND self-healing retries on failure.
 
 Read this file alongside ``nodes.py`` and ``retriever.py`` (what each
 node does) and ``state.py`` (what flows between them). This file is
@@ -26,13 +26,13 @@ Graph::
               |                  |
               |                  v
               |          +---------------+
-              |          |  validate_sql |
-              |          +-------+-------+
+              |          |  validate_sql |  <-- can retry?
+              |          +-------+-------+      loop to generate_sql
               |        invalid|     |valid
               |               v     v
               |     +-----------+ +----------+
-              |     | finalize_ | |execute_  |
-              |     | error     | |  sql     |
+              |     | finalize_ | |execute_  | <-- can retry?
+              |     | error     | |  sql     |     loop to generate_sql
               |     +-----+-----+ +----+-----+
               |           ^           |
               |           | db error  |
@@ -48,8 +48,11 @@ Graph::
                      v
                     END
 
-Week 4 will close the loop by sending ``finalize_error`` back to
-``generate_sql`` for self-healing rather than terminating.
+Week 4 closes the retry loop: when ``validate_sql`` or ``execute_sql``
+fail and the per-class retry budget is not exhausted, the router
+sends control back to ``generate_sql`` instead of ``finalize_error``.
+The next ``generate_sql`` invocation sees the failure history in
+``state.attempts`` and switches to a self-healing prompt.
 """
 
 from __future__ import annotations
@@ -104,24 +107,27 @@ def build_graph() -> CompiledStateGraph[AgentState, Any, AgentState, AgentState]
     workflow.add_edge("retrieve_schema", "generate_sql")
     workflow.add_edge("generate_sql", "validate_sql")
 
-    # After validation: either jump straight to the error sink or proceed
-    # to execution.
+    # After validation, three outcomes: success -> execute_sql,
+    # retryable error -> generate_sql (loop), terminal -> finalize_error.
     workflow.add_conditional_edges(
         "validate_sql",
         nodes.route_after_validate,
         {
-            "finalize_error": "finalize_error",
             "execute_sql": "execute_sql",
+            "generate_sql": "generate_sql",
+            "finalize_error": "finalize_error",
         },
     )
 
-    # Same pattern after execution — DB errors get rerouted.
+    # Same three-way fan-out after execution — DB errors are also
+    # eligible for the retry loop.
     workflow.add_conditional_edges(
         "execute_sql",
         nodes.route_after_execute,
         {
-            "finalize_error": "finalize_error",
             "summarize_result": "summarize_result",
+            "generate_sql": "generate_sql",
+            "finalize_error": "finalize_error",
         },
     )
 

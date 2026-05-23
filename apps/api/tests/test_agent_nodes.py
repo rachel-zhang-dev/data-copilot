@@ -187,11 +187,216 @@ def test_route_after_classify_dispatches_on_intent() -> None:
     assert nodes.route_after_classify({}) == "generate_sql"
 
 
-def test_route_after_validate_uses_error_field() -> None:
-    assert nodes.route_after_validate({"error": "unsafe_sql: ..."}) == "finalize_error"
+def test_route_after_validate_proceeds_on_success() -> None:
     assert nodes.route_after_validate({"sql": "SELECT 1"}) == "execute_sql"
 
 
-def test_route_after_execute_uses_error_field() -> None:
-    assert nodes.route_after_execute({"error": "execution_failed: ..."}) == "finalize_error"
+def test_route_after_validate_terminates_when_no_attempts_history() -> None:
+    """Error set but no attempts list => caller did not record one;
+    safest path is terminate."""
+    assert nodes.route_after_validate({"error": "unsafe_sql: ..."}) == "finalize_error"
+
+
+def test_route_after_execute_proceeds_on_success() -> None:
     assert nodes.route_after_execute({"sql_result": []}) == "summarize_result"
+
+
+def test_route_after_execute_terminates_when_no_attempts_history() -> None:
+    assert nodes.route_after_execute({"error": "execution_failed: ..."}) == "finalize_error"
+
+
+# ---------------------------------------------------------------------------
+# Week 4 — self-healing primitives
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "error,expected_class",
+    [
+        ("unsafe_sql: DROP not allowed", "unsafe_sql"),
+        ("execution_failed: relation foo does not exist", "execution_failed"),
+        ("network blew up", "fatal"),
+        ("", "fatal"),
+    ],
+)
+def test_classify_error(error: str, expected_class: str) -> None:
+    assert nodes.classify_error(error) == expected_class
+
+
+def _attempt(error_class: str, sql: str = "SELECT 1", error: str = "boom") -> Any:
+    return {"sql": sql, "error": error, "error_class": error_class}
+
+
+def test_can_retry_returns_false_when_no_attempts() -> None:
+    assert nodes.can_retry([]) is False
+
+
+def test_can_retry_first_execution_failure_allows_retry() -> None:
+    assert nodes.can_retry([_attempt("execution_failed")]) is True
+
+
+def test_can_retry_at_execution_failed_budget_still_allows_one_more() -> None:
+    # budget=2 means up to 2 retries; len=2 = "we have failed twice,
+    # we are about to do the 2nd retry" => True
+    assert nodes.can_retry([_attempt("execution_failed"), _attempt("execution_failed")]) is True
+
+
+def test_can_retry_over_execution_failed_budget_stops() -> None:
+    attempts = [_attempt("execution_failed")] * 3
+    assert nodes.can_retry(attempts) is False
+
+
+def test_can_retry_unsafe_sql_budget_is_one() -> None:
+    assert nodes.can_retry([_attempt("unsafe_sql")]) is True
+    assert nodes.can_retry([_attempt("unsafe_sql")] * 2) is False
+
+
+def test_can_retry_fatal_class_never_retries() -> None:
+    assert nodes.can_retry([_attempt("fatal")]) is False
+
+
+def test_can_retry_respects_hard_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even with a wildly inflated budget, the global ceiling kicks in."""
+    monkeypatch.setattr(
+        nodes, "RETRY_BUDGET", {"execution_failed": 100, "unsafe_sql": 1, "fatal": 0}
+    )
+    attempts = [_attempt("execution_failed")] * nodes.HARD_RETRY_CEILING
+    assert nodes.can_retry(attempts) is False
+
+
+# ---------------------------------------------------------------------------
+# generate_sql in retry mode
+# ---------------------------------------------------------------------------
+
+
+def test_generate_sql_uses_retry_prompt_when_attempts_exist(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "Table: customers")
+    llm = stub_llm_factory("SELECT * FROM customers LIMIT 1")
+    state = {
+        "question": "list customers",
+        "relevant_schema": "Table: customers",
+        "attempts": [
+            _attempt(
+                "execution_failed",
+                sql="SELECT * FROM customer",
+                error='relation "customer" does not exist',
+            )
+        ],
+        "error": "execution_failed: ...",
+    }
+    out = nodes.generate_sql_node(state)
+
+    # Retry branch: returned dict must clear ``error`` so routers see fresh state.
+    assert out["error"] is None
+    assert out["sql"] == "SELECT * FROM customers LIMIT 1"
+
+    # Verify the retry prompt actually included the previous failure.
+    user_msg = llm.calls[0][1].content
+    assert "SELECT * FROM customer" in user_msg
+    assert "customer" in user_msg
+    assert "does not exist" in user_msg
+
+
+def test_generate_sql_uses_first_time_prompt_when_no_attempts(
+    stub_llm_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nodes, "get_schema_ddl", lambda: "Table: customers")
+    llm = stub_llm_factory("SELECT 1")
+
+    nodes.generate_sql_node({"question": "test", "relevant_schema": "Table: t"})
+
+    user_msg = llm.calls[0][1].content
+    # First-time prompt does NOT include the "previous attempt" wording.
+    assert "previous attempt" not in user_msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# validate_sql / execute_sql write attempts on failure
+# ---------------------------------------------------------------------------
+
+
+def test_validate_sql_appends_attempt_on_safety_failure() -> None:
+    out = nodes.validate_sql_node({"sql": "DROP TABLE customers"})
+    assert out["error"].startswith("unsafe_sql:")
+    assert len(out["attempts"]) == 1
+    attempt = out["attempts"][0]
+    assert attempt["sql"] == "DROP TABLE customers"
+    assert attempt["error_class"] == "unsafe_sql"
+
+
+def test_execute_sql_appends_attempt_on_db_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError('relation "foo" does not exist')
+
+    monkeypatch.setattr(nodes, "run_select", boom)
+    out = nodes.execute_sql_node({"sql": "SELECT * FROM foo"})
+    assert out["error"].startswith("execution_failed:")
+    assert len(out["attempts"]) == 1
+    assert out["attempts"][0]["error_class"] == "execution_failed"
+    assert out["attempts"][0]["sql"] == "SELECT * FROM foo"
+
+
+# ---------------------------------------------------------------------------
+# Routing in retry mode
+# ---------------------------------------------------------------------------
+
+
+def test_route_after_validate_loops_back_when_retryable() -> None:
+    state = {
+        "error": "unsafe_sql: DROP not allowed",
+        "attempts": [_attempt("unsafe_sql")],
+    }
+    assert nodes.route_after_validate(state) == "generate_sql"
+
+
+def test_route_after_validate_terminates_when_budget_exhausted() -> None:
+    state = {
+        "error": "unsafe_sql: ...",
+        "attempts": [_attempt("unsafe_sql")] * 2,
+    }
+    assert nodes.route_after_validate(state) == "finalize_error"
+
+
+def test_route_after_execute_loops_back_when_retryable() -> None:
+    state = {
+        "error": "execution_failed: bad column",
+        "attempts": [_attempt("execution_failed")],
+    }
+    assert nodes.route_after_execute(state) == "generate_sql"
+
+
+def test_route_after_execute_terminates_when_budget_exhausted() -> None:
+    state = {
+        "error": "execution_failed: still bad",
+        "attempts": [_attempt("execution_failed")] * 3,
+    }
+    assert nodes.route_after_execute(state) == "finalize_error"
+
+
+# ---------------------------------------------------------------------------
+# finalize_error mentions attempt count
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_error_mentions_attempts_when_more_than_one() -> None:
+    out = nodes.finalize_error_node(
+        {
+            "error": "execution_failed: still wrong",
+            "attempts": [_attempt("execution_failed")] * 3,
+        }
+    )
+    assert "after 3 attempts" in out["answer"]
+
+
+def test_finalize_error_does_not_mention_attempts_for_first_failure() -> None:
+    out = nodes.finalize_error_node(
+        {
+            "error": "unsafe_sql: nope",
+            "attempts": [_attempt("unsafe_sql")],
+        }
+    )
+    assert "attempts" not in out["answer"]

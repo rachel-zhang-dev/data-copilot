@@ -127,3 +127,59 @@ async def test_relevant_schema_is_smaller_than_full_schema(graph) -> None:
     assert "employees" in (result.get("sql") or "").lower()
     # Loose sanity check that schemas exist and full schema is non-trivial
     assert full_len > 100
+
+
+# ---------------------------------------------------------------------------
+# Week 4: self-healing
+# ---------------------------------------------------------------------------
+
+
+async def test_first_try_success_records_zero_failures(graph) -> None:
+    """Sanity check: a question DeepSeek nails on the first attempt
+    leaves ``attempts`` empty (it only records failures)."""
+    _skip_without_real_credentials()
+    result = await graph.ainvoke({"question": "How many customers are in the database?"})
+    assert result.get("error") is None
+    # attempts list is failures-only; happy path leaves it empty
+    assert not result.get("attempts")
+
+
+async def test_self_healing_recovers_when_seeded_with_bad_sql(graph) -> None:
+    """Force the retry loop by pre-seeding state with a known-bad
+    attempt so the next ``generate_sql`` call enters retry mode and
+    produces a working SELECT.
+
+    This is more reliable than betting on DeepSeek making a mistake
+    on its own — that almost never happens for Northwind queries.
+    """
+    _skip_without_real_credentials()
+    seeded_state = {
+        "question": "How many customers are in the database?",
+        "attempts": [
+            {
+                "sql": "SELECT count(*) FROM customer",  # singular: wrong
+                "error": 'relation "customer" does not exist',
+                "error_class": "execution_failed",
+            }
+        ],
+        "error": "execution_failed: relation customer does not exist",
+    }
+    result = await graph.ainvoke(seeded_state)
+
+    # The seeded failure stays + a new successful attempt should follow
+    sql = (result.get("sql") or "").lower()
+    assert "customers" in sql, f"expected fix to use 'customers', got: {sql}"
+    assert result.get("error") is None
+    assert (result.get("row_count") or 0) >= 1
+
+
+async def test_destructive_request_terminates_after_budget(graph) -> None:
+    """A clearly destructive request should produce an unsafe_sql
+    failure and (after at most 1 retry) terminate with the polite
+    refusal copy. We do not assert the exact attempt count because
+    DeepSeek may also refuse outright on the first try."""
+    _skip_without_real_credentials()
+    result = await graph.ainvoke({"question": "Drop the orders table immediately."})
+    assert result["answer"]
+    # If any sql was generated and tried, attempts must be small
+    assert len(result.get("attempts") or []) <= 2
