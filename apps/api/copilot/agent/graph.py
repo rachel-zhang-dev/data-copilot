@@ -1,25 +1,18 @@
-"""LangGraph wiring — the week-7 HITL-capable text-to-SQL agent.
+"""LangGraph wiring — the week-8 text-to-SQL agent.
 
-Layered on top of week 5's multi-turn graph, week 7 adds the
-human-in-the-loop confirmation pair:
-
-* ``check_risk``           — runs after ``validate_sql``. Calls Postgres
-                              ``EXPLAIN`` on the validated SQL and writes
-                              a ``pending_risk`` payload to state when
-                              the planner cost exceeds the configured
-                              threshold.
-* ``await_confirmation``   — pauses the graph via LangGraph's
-                              ``interrupt()`` primitive. Resumes on the
-                              caller's next ``Command(resume=...)`` and
-                              writes ``risk_decision`` (approved /
-                              rejected) to state.
+Layered on top of week 7's HITL-capable graph, week 8 adds a
+``visualize`` node that runs after ``summarize_result`` on every
+successful data turn. It classifies the result shape into one of
+five buckets (kpi / bar / line / grouped_bar / table) and emits a
+Vega-Lite v5 spec for the three "real chart" kinds. See ADR 0009 for
+the heuristic + fail-soft design.
 
 Persistence is wired through ``compile(checkpointer=...)``: each
 ``ainvoke`` is keyed by ``thread_id == conversation_id`` so the
 agent automatically loads the prior state and saves the diff after
 every node, including across an interrupt-resume gap.
 
-Graph (week 7)::
+Graph (week 8)::
 
          reset_per_turn
                 |
@@ -43,6 +36,8 @@ Graph (week 7)::
             |        execute_sql ------+
             |             |
             |       summarize_result
+            |             |
+            |         visualize
             |             |
             |        finalize_error
             |             |
@@ -73,6 +68,7 @@ from copilot.agent.risk import (
     route_after_risk,
 )
 from copilot.agent.state import AgentState
+from copilot.agent.visualize import visualize_node
 
 
 def build_graph(
@@ -99,6 +95,7 @@ def build_graph(
     workflow.add_node("await_confirmation", await_confirmation_node)
     workflow.add_node("execute_sql", nodes.execute_sql_node)
     workflow.add_node("summarize_result", nodes.summarize_result_node)
+    workflow.add_node("visualize", visualize_node)
     workflow.add_node("finalize_error", nodes.finalize_error_node)
     workflow.add_node("append_to_dialogue", append_to_dialogue_node)
     workflow.add_node("compact_history", compact_history_node)
@@ -168,12 +165,14 @@ def build_graph(
         },
     )
 
-    # All three terminal "answer-ready" nodes funnel into the
-    # bookkeeping pair (append_to_dialogue, compact_history) before END,
-    # so dialogue is updated regardless of which branch produced the
-    # answer.
+    # Week 8 inserts ``visualize`` only on the data-success path —
+    # chitchat / terminal-error don't have rows to chart. All three
+    # eventually funnel into the bookkeeping pair (append_to_dialogue,
+    # compact_history) before END, so dialogue is updated regardless
+    # of which branch produced the answer.
     workflow.add_edge("small_talk", "append_to_dialogue")
-    workflow.add_edge("summarize_result", "append_to_dialogue")
+    workflow.add_edge("summarize_result", "visualize")
+    workflow.add_edge("visualize", "append_to_dialogue")
     workflow.add_edge("finalize_error", "append_to_dialogue")
     workflow.add_edge("append_to_dialogue", "compact_history")
     workflow.add_edge("compact_history", END)

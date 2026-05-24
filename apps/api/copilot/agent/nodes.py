@@ -23,6 +23,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from copilot.agent.dialogue import format_dialogue_for_prompt
+from copilot.agent.insight import insight_to_state, parse_insight
 from copilot.agent.prompts import (
     CLASSIFY_INTENT_SYSTEM,
     CONVERSATION_HISTORY_TEMPLATE,
@@ -339,7 +340,20 @@ def execute_sql_node(state: AgentState) -> dict[str, Any]:
 
 
 def summarize_result_node(state: AgentState) -> dict[str, Any]:
-    """Turn raw rows into a natural-language answer."""
+    """Turn raw rows into a natural-language answer + structured insight.
+
+    Since week 8 the LLM is asked for a JSON ``Insight`` envelope
+    rather than a single sentence. The node tries to parse it and:
+
+      * on success → sets ``answer`` = ``insight.headline`` AND writes
+        the full envelope to ``insight``.
+      * on failure (non-JSON / schema mismatch) → sets ``answer`` to
+        the raw LLM text and leaves ``insight`` unset.
+
+    This keeps the legacy contract intact ("after this node, ``answer``
+    is populated") while giving richer-output consumers a structured
+    envelope when the LLM cooperates.
+    """
     rows = state.get("sql_result", [])
     user_msg = SUMMARIZE_USER_TEMPLATE.format(
         question=state["question"],
@@ -354,8 +368,15 @@ def summarize_result_node(state: AgentState) -> dict[str, Any]:
             HumanMessage(content=user_msg),
         ]
     )
-    answer = _message_text(response).strip()
-    return {"answer": answer}
+    raw = _message_text(response).strip()
+
+    insight = parse_insight(raw)
+    if insight is not None:
+        log.info("summarize: insight parsed (%d bullets)", len(insight.bullets))
+        return insight_to_state(insight)
+
+    log.warning("summarize: insight JSON parse failed; falling back to plain text")
+    return {"answer": raw}
 
 
 def finalize_error_node(state: AgentState) -> dict[str, Any]:

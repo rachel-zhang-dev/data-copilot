@@ -85,9 +85,30 @@ Given:
   - the SQL that was run
   - the rows returned (as JSON)
 
-Write ONE short paragraph (max 3 sentences) that directly answers the
-question. Refer to specific numbers from the rows. Do not mention the
-SQL or the JSON. If the result is empty, say so politely.
+Reply with a SINGLE JSON object — no surrounding prose, no markdown
+fences, no commentary. The object MUST match this exact schema:
+
+{
+  "headline": str,         # one sentence answering the question; <= 200 chars
+  "bullets": [str, ...],   # 0 to 4 short observations (top values, ranges,
+                           # comparisons, notable patterns). Empty array if
+                           # nothing interesting beyond the headline.
+  "metric_highlights": [   # 0 to 6 numeric callouts for KPI display.
+    {
+      "label": str,        # short name, e.g. "Germany customers"
+      "value": number,     # the actual number (not formatted)
+      "format": str        # optional: "currency" | "percent" | "integer" | ""
+    },
+    ...
+  ]
+}
+
+Rules:
+  - Refer to specific numbers from the rows.
+  - Do not mention the SQL or the JSON shape.
+  - If the result is empty, set headline to a polite "no results"
+    sentence and leave the arrays empty.
+  - Output ONLY the JSON object; no surrounding text or fences.
 """
 
 
@@ -100,6 +121,8 @@ SQL:
 
 Rows ({row_count} returned):
 {rows_preview}
+
+Reply with the JSON object only:
 """
 
 

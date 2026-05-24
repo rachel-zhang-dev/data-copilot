@@ -180,6 +180,28 @@ async def main() -> None:
         if result.get("error"):
             print("--- ERROR ---")
             print(result["error"])
+        # Week 8: structured insight + chart kind / spec. Both are
+        # optional — chitchat / errored turns don't populate them.
+        insight = result.get("insight") or {}
+        if insight:
+            print("--- INSIGHT ---")
+            if insight.get("bullets"):
+                for b in insight["bullets"]:
+                    print(f"  - {b}")
+            highlights = insight.get("metric_highlights") or []
+            if highlights:
+                print("  metrics:")
+                for h in highlights:
+                    print(f"    {h.get('label')}: {h.get('value')}")
+        if result.get("chart_kind"):
+            print(f"--- CHART ({result['chart_kind']}) ---")
+            if result.get("chart_spec"):
+                spec_preview = json.dumps(
+                    result["chart_spec"], default=str, ensure_ascii=False
+                )
+                if len(spec_preview) > 400:
+                    spec_preview = spec_preview[:400] + "..."
+                print(spec_preview)
         print("--- ANSWER ---")
         print(result.get("answer", ""))
         print("--- THREAD ---")

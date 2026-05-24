@@ -184,4 +184,26 @@ class AgentState(TypedDict, total=False):
 
     # ---------- Outputs (read by the caller) ----------
     answer: str
-    """Final natural-language answer presented to the user."""
+    """Final natural-language answer presented to the user.
+
+    Since week 8 this is sourced from ``insight.headline`` when the
+    structured insight parse succeeds, falling back to the raw LLM
+    text otherwise. Either way, ``answer`` is always populated after
+    a successful data turn so every existing caller keeps working."""
+
+    # ---------- Outputs added in week 8 ----------
+    insight: dict[str, Any]
+    """Structured ``Insight`` envelope produced by
+    ``summarize_result_node``: ``{headline, bullets, metric_highlights}``.
+    ``None`` when the JSON parse fell back to the legacy NL-only path
+    (chitchat / error branches also leave this unset)."""
+
+    chart_kind: Literal["kpi", "bar", "line", "grouped_bar", "table"]
+    """Heuristic classification of the result shape, set by
+    ``visualize_node``. ``None`` outside the data success path."""
+
+    chart_spec: dict[str, Any]
+    """Vega-Lite v5 specification, set by ``visualize_node`` for
+    ``bar`` / ``line`` / ``grouped_bar`` results. ``None`` for
+    ``kpi`` / ``table`` (the UI renders those directly from
+    ``sql_result``) and outside the data success path."""

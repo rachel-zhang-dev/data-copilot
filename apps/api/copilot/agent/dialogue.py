@@ -64,6 +64,11 @@ def reset_per_turn_node(state: AgentState) -> dict[str, Any]:
         # never inherits "yes I already approved" from a previous turn.
         "pending_risk": None,
         "risk_decision": None,
+        # Week 8: clear the structured insight + chart so a follow-up
+        # turn never echoes the previous answer's visualisation.
+        "insight": None,
+        "chart_kind": None,
+        "chart_spec": None,
         "turn_index": current_turn_index(state),
     }
 

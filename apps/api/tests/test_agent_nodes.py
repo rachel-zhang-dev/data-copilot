@@ -178,6 +178,8 @@ def test_execute_sql_captures_db_errors(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_summarize_result_uses_llm_to_phrase_answer(stub_llm_factory) -> None:
+    """Legacy path: LLM returns plain text, no JSON. ``answer`` falls
+    back to the raw text and ``insight`` is left unset."""
     stub_llm_factory("There are 91 customers in total.")
     out = nodes.summarize_result_node(
         {
@@ -188,6 +190,48 @@ def test_summarize_result_uses_llm_to_phrase_answer(stub_llm_factory) -> None:
         }
     )
     assert "91" in out["answer"]
+    assert "insight" not in out, "JSON parse failed; insight must stay unset"
+
+
+def test_summarize_result_parses_structured_insight(stub_llm_factory) -> None:
+    """Week 8 path: LLM emits a JSON ``Insight`` envelope. ``answer``
+    becomes ``insight.headline`` and the full envelope flows into
+    ``state.insight``."""
+    stub_llm_factory(
+        '{"headline": "91 customers in total.", '
+        '"bullets": ["Mostly Western Europe", "5% have no orders"], '
+        '"metric_highlights": [{"label": "Total customers", "value": 91, "format": "integer"}]}'
+    )
+    out = nodes.summarize_result_node(
+        {
+            "question": "How many customers?",
+            "sql": "SELECT COUNT(*) FROM customers LIMIT 100",
+            "sql_result": [{"count": 91}],
+            "row_count": 1,
+        }
+    )
+    assert out["answer"] == "91 customers in total."
+    assert out["insight"]["headline"] == "91 customers in total."
+    assert len(out["insight"]["bullets"]) == 2
+    assert out["insight"]["metric_highlights"][0]["value"] == 91
+
+
+def test_summarize_result_falls_back_when_json_is_invalid(stub_llm_factory) -> None:
+    """A misbehaving LLM that wraps the JSON in fences must still be
+    parsed (fence stripping); but a truly broken response degrades
+    to the legacy NL-only path with no insight."""
+    stub_llm_factory("```json\n{this is not valid json}\n```")
+    out = nodes.summarize_result_node(
+        {
+            "question": "q",
+            "sql": "SELECT 1",
+            "sql_result": [],
+            "row_count": 0,
+        }
+    )
+    # answer is set to the raw text so the user gets something
+    assert out["answer"]
+    assert "insight" not in out
 
 
 # ---------------------------------------------------------------------------

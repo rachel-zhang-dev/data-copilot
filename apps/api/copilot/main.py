@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.7.0",
+    version="0.8.0",
     lifespan=lifespan,
 )
 
@@ -192,6 +192,19 @@ class AskResponse(BaseModel):
     # Week 7 — HITL surface.
     status: Literal["ok", "pending_confirmation"] = "ok"
     pending_risk: dict[str, Any] | None = None
+    # Week 8 — structured insight + chart spec.
+    # ``insight`` is the ``{headline, bullets, metric_highlights}``
+    # envelope produced by ``summarize_result_node``; ``None`` when the
+    # LLM JSON parse fell back to the legacy NL-only path or the turn
+    # never reached the data success branch (chitchat / terminal error).
+    insight: dict[str, Any] | None = None
+    # ``chart_kind`` is one of ``"kpi"`` | ``"bar"`` | ``"line"`` |
+    # ``"grouped_bar"`` | ``"table"`` on the data success path, else
+    # ``None``. ``chart_spec`` is a Vega-Lite v5 spec for ``bar`` /
+    # ``line`` / ``grouped_bar``; ``None`` for ``kpi`` and ``table``
+    # (the UI renders those directly from ``rows``).
+    chart_kind: Literal["kpi", "bar", "line", "grouped_bar", "table"] | None = None
+    chart_spec: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -325,4 +338,7 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
         attempts_history=list(this_turn_failures) if debug else None,
         status="ok",
         pending_risk=None,
+        insight=result.get("insight"),
+        chart_kind=result.get("chart_kind"),
+        chart_spec=result.get("chart_spec"),
     )

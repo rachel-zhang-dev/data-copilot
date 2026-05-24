@@ -208,6 +208,45 @@ planner cost (vs row-count heuristics or `EXPLAIN ANALYZE`), why
 `interrupt()` over external queues, and the per-class threshold
 tuning notes.
 
+### Visualisation + structured insight (week 8)
+
+Every successful data turn now returns three new fields alongside
+the rows:
+
+- `chart_kind` — one of `kpi` / `bar` / `line` / `grouped_bar` /
+  `table`, picked deterministically from the result shape.
+- `chart_spec` — a [Vega-Lite v5](https://vega.github.io/vega-lite/)
+  specification, populated for `bar` / `line` / `grouped_bar`; the
+  Next.js UI in Week 10 renders it with one `<VegaLite>` call.
+- `insight` — a structured `{headline, bullets, metric_highlights}`
+  envelope produced by the LLM in JSON mode. The legacy single-
+  sentence `answer` is the same string as `insight.headline`, so
+  every existing caller keeps working.
+
+```bash
+./scripts/dev.sh ask "Count customers grouped by country"
+# --- SQL ---
+# SELECT country, count(*) FROM customers GROUP BY country LIMIT 100
+# --- INSIGHT ---
+#   - USA leads with 13 customers
+#   - 21 countries total
+#   metrics:
+#     Top country (USA): 13
+# --- CHART (bar) ---
+# {"$schema":"https://vega.github.io/schema/vega-lite/v5.json", ...}
+# --- ANSWER ---
+# USA has the most customers, with 13.
+```
+
+Failure is fail-soft on both axes: a misbehaving LLM that returns
+non-JSON degrades to the legacy NL-only `answer`; a malformed result
+set falls back to `chart_kind="table"`. Neither path ever blocks a
+user from seeing their rows. See
+[ADR 0009](docs/decisions/0009-visualization-and-insight.md) for the
+heuristic decision table, why Vega-Lite over Chart.js / custom
+schemas, and why a structured `insight` envelope vs a separate
+`insight_node`.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -221,7 +260,7 @@ tuning notes.
 | 5 ✅ | Multi-turn dialogue + chat history compaction |
 | 6 ✅ | Evaluation set + 3 A/B experiments |
 | 7 ✅ | Human-in-the-loop confirmation for expensive queries |
-| 8 | Visualisation generation + insight summaries |
+| 8 ✅ | Visualisation generation + insight summaries |
 | 9 | Caching layer · cost report · retries with exponential backoff |
 | 10 | Next.js front-end with streaming responses |
 | 11 | Docker production image · Fly.io deploy · monitoring |
