@@ -47,14 +47,18 @@ async def run_ab(
     baseline: ExperimentConfig,
     treatment: ExperimentConfig,
     cases_filter: str | None = None,
+    case_timeout_s: float | None = None,
 ) -> Comparison:
     """Run baseline + treatment and pair them.
 
     ``cases_filter`` is a category name; when set, only cases of that
     category are evaluated. The dialogue-context experiment uses this
     to focus on follow-up cases (where the flag actually matters).
+
+    ``case_timeout_s`` is forwarded to both sides so a single hung LLM
+    call cannot stall the harness.
     """
     selected = cases if cases_filter is None else [c for c in cases if c.category == cases_filter]
-    base = await run_eval(selected, baseline)
-    treat = await run_eval(selected, treatment)
+    base = await run_eval(selected, baseline, case_timeout_s=case_timeout_s)
+    treat = await run_eval(selected, treatment, case_timeout_s=case_timeout_s)
     return Comparison(name=name, baseline=base, treatment=treat)

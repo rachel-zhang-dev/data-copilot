@@ -153,14 +153,39 @@ def _estimate_tokens_from_messages(state: dict[str, Any]) -> int:
     return chars // 4
 
 
-async def _invoke_case(case: CaseSpec, graph: Any) -> RunResult:
-    """Run one case through the graph and return a grading-friendly RunResult."""
+async def _invoke_case(
+    case: CaseSpec, graph: Any, *, timeout_s: float | None
+) -> RunResult:
+    """Run one case through the graph and return a grading-friendly RunResult.
+
+    ``timeout_s`` (when set) caps how long a single ``graph.ainvoke`` is
+    allowed to run. A hung LLM call previously stalled the entire eval;
+    with a timeout, the case is recorded as a ``runner_timeout`` failure
+    and the run moves on. ``None`` keeps the legacy unbounded behaviour
+    (handy for tests).
+    """
     config = {"configurable": {"thread_id": f"eval-{case.id}-{uuid.uuid4().hex[:8]}"}}
     initial = _initial_state(case)
 
     t0 = time.perf_counter()
     try:
-        state = await graph.ainvoke(initial, config=config)
+        invocation = graph.ainvoke(initial, config=config)
+        if timeout_s is not None:
+            state = await asyncio.wait_for(invocation, timeout=timeout_s)
+        else:
+            state = await invocation
+    except TimeoutError:
+        elapsed = (time.perf_counter() - t0) * 1000
+        log.warning("case %s timed out after %.1fs", case.id, timeout_s)
+        return RunResult(
+            sql=None,
+            answer=f"<timeout after {timeout_s:.1f}s>",
+            rows=None,
+            row_count=None,
+            error=f"runner_timeout: exceeded {timeout_s:.1f}s",
+            attempts=0,
+            latency_ms=elapsed,
+        )
     except Exception as exc:
         elapsed = (time.perf_counter() - t0) * 1000
         log.exception("case %s crashed: %s", case.id, exc)
@@ -203,7 +228,11 @@ async def _invoke_case(case: CaseSpec, graph: Any) -> RunResult:
 
 
 async def run_eval(
-    cases: list[CaseSpec], cfg: ExperimentConfig, *, graph: Any | None = None
+    cases: list[CaseSpec],
+    cfg: ExperimentConfig,
+    *,
+    graph: Any | None = None,
+    case_timeout_s: float | None = None,
 ) -> ExperimentResult:
     """Run every case under the given experiment config.
 
@@ -212,6 +241,9 @@ async def run_eval(
         cfg: which feature flags to flip (passed through ``feature_flags.override``).
         graph: pre-built graph (for tests). When ``None``, a fresh graph
             with an InMemorySaver is built — this is the normal path.
+        case_timeout_s: optional per-case wall-clock budget. Cases that
+            exceed it are recorded as ``runner_timeout`` failures and the
+            run continues. ``None`` keeps the legacy unbounded behaviour.
 
     Returns:
         ExperimentResult with per-case outcomes and aggregates.
@@ -227,7 +259,7 @@ async def run_eval(
     ):
         for case in cases:
             log.info("  [%s] %s — %s", cfg.label, case.id, case.category)
-            run = await _invoke_case(case, g)
+            run = await _invoke_case(case, g, timeout_s=case_timeout_s)
             grade_report = grade(case, run)
             result.outcomes.append(CaseOutcome(case=case, run=run, grade=grade_report))
 

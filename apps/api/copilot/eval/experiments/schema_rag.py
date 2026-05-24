@@ -17,10 +17,13 @@ from copilot.eval.config import BASELINE_FULL, WITHOUT_SCHEMA_RAG
 from copilot.eval.experiments._common import Comparison, run_ab
 
 
-async def run_schema_rag_ab(cases: list[CaseSpec]) -> Comparison:
+async def run_schema_rag_ab(
+    cases: list[CaseSpec], *, case_timeout_s: float | None = None
+) -> Comparison:
     return await run_ab(
         "schema_rag",
         cases,
         baseline=WITHOUT_SCHEMA_RAG,  # "off" is baseline (week-2 behaviour)
         treatment=BASELINE_FULL,  # "on" is treatment (week-3 default)
+        case_timeout_s=case_timeout_s,
     )

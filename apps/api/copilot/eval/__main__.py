@@ -5,9 +5,16 @@ Usage::
     uv run python -m copilot.eval                        # run all 3 A/B
     uv run python -m copilot.eval --experiment schema_rag
     uv run python -m copilot.eval --cases path/to/cases.yaml --output-dir docs/eval
+    uv run python -m copilot.eval --limit 3              # smoke-run only 3 cases
+    uv run python -m copilot.eval --case-timeout 30      # bound per-case wall time
 
 Designed to be wrapped by ``scripts/dev.sh eval`` so the operator
 never has to remember the module path.
+
+Note on ``--dry-run``: it only suppresses **file writes**. LLM, embedding
+and database calls still happen. Use ``--limit 1`` (or a small subset of
+``--experiment``) when you actually want to minimise API spend while
+sanity-checking the harness.
 """
 
 from __future__ import annotations
@@ -77,15 +84,43 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the report to stdout instead of writing files.",
+        help=(
+            "Print reports to stdout instead of writing files. NOTE: this "
+            "does NOT mock LLM / DB / embedding calls — they still happen. "
+            "Use --limit to reduce API spend during smoke checks."
+        ),
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Run only the first N cases (after experiment filtering). "
+            "Useful for fast iteration on the harness itself; full reports "
+            "should run without --limit."
+        ),
+    )
+    p.add_argument(
+        "--case-timeout",
+        type=float,
+        default=120.0,
+        metavar="SECONDS",
+        help=(
+            "Per-case wall-clock budget. A case that exceeds it is recorded "
+            "as a runner_timeout failure and the run continues, so a single "
+            "hung LLM call cannot stall the entire eval. Pass 0 to disable."
+        ),
     )
     return p.parse_args(argv)
 
 
-async def _run_one(name: str, cases: list) -> Comparison:  # type: ignore[type-arg]
+async def _run_one(
+    name: str, cases: list, case_timeout_s: float | None  # type: ignore[type-arg]
+) -> Comparison:
     runner = _EXPERIMENTS[name]
     log.info("=== experiment: %s ===", name)
-    return await runner(cases)
+    return await runner(cases, case_timeout_s=case_timeout_s)
 
 
 async def _main(argv: list[str] | None = None) -> int:
@@ -98,14 +133,26 @@ async def _main(argv: list[str] | None = None) -> int:
     cases = load_cases(args.cases)
     log.info("loaded %d cases from %s", len(cases), args.cases)
 
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise SystemExit("--limit must be a positive integer")
+        if args.limit < len(cases):
+            log.info("--limit=%d → truncating from %d cases", args.limit, len(cases))
+            cases = cases[: args.limit]
+
     selected = args.experiment or list(_EXPERIMENTS)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # argparse coerces missing --case-timeout to the default 120.0; an
+    # explicit 0 means "no timeout" and is normalised to None for the
+    # runner's API.
+    case_timeout_s = args.case_timeout if args.case_timeout and args.case_timeout > 0 else None
 
     timestamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
     summary_lines: list[str] = [f"# Eval summary — {timestamp} UTC", ""]
 
     for name in selected:
-        comparison = await _run_one(name, cases)
+        comparison = await _run_one(name, cases, case_timeout_s)
         report = render_comparison(comparison)
 
         if args.dry_run:

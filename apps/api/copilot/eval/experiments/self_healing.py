@@ -15,10 +15,13 @@ from copilot.eval.config import BASELINE_FULL, WITHOUT_SELF_HEALING
 from copilot.eval.experiments._common import Comparison, run_ab
 
 
-async def run_self_healing_ab(cases: list[CaseSpec]) -> Comparison:
+async def run_self_healing_ab(
+    cases: list[CaseSpec], *, case_timeout_s: float | None = None
+) -> Comparison:
     return await run_ab(
         "self_healing",
         cases,
         baseline=WITHOUT_SELF_HEALING,
         treatment=BASELINE_FULL,
+        case_timeout_s=case_timeout_s,
     )

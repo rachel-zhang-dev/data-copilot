@@ -15,11 +15,14 @@ from copilot.eval.config import BASELINE_FULL, WITHOUT_DIALOGUE_CONTEXT
 from copilot.eval.experiments._common import Comparison, run_ab
 
 
-async def run_dialogue_context_ab(cases: list[CaseSpec]) -> Comparison:
+async def run_dialogue_context_ab(
+    cases: list[CaseSpec], *, case_timeout_s: float | None = None
+) -> Comparison:
     return await run_ab(
         "dialogue_context",
         cases,
         baseline=WITHOUT_DIALOGUE_CONTEXT,
         treatment=BASELINE_FULL,
         cases_filter="follow_up",
+        case_timeout_s=case_timeout_s,
     )

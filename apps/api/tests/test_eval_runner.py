@@ -192,6 +192,41 @@ async def test_run_ab_returns_named_comparison(patched_world) -> None:
     assert cmp.treatment.total == 1
 
 
+async def test_case_timeout_recorded_as_failure() -> None:
+    """A hung graph invocation must surface as a ``runner_timeout``
+    failure rather than blocking the whole eval."""
+    import asyncio
+
+    class HungGraph:
+        async def ainvoke(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+            await asyncio.sleep(10)
+            return {}
+
+    case = _passing_case()
+    result = await run_eval(
+        [case], BASELINE_FULL, graph=HungGraph(), case_timeout_s=0.05
+    )
+    assert result.total == 1
+    assert result.passed == 0
+    outcome = result.outcomes[0]
+    assert outcome.run.error is not None
+    assert outcome.run.error.startswith("runner_timeout:")
+    assert outcome.run.attempts == 0
+
+
+async def test_no_timeout_keeps_legacy_behaviour(patched_world) -> None:
+    """Default (timeout=None) must not wrap ``ainvoke`` in wait_for so
+    existing test paths keep working unchanged."""
+    cases = [_passing_case()]
+    result = await run_eval(
+        cases,
+        BASELINE_FULL,
+        graph=build_graph(checkpointer=InMemorySaver()),
+        case_timeout_s=None,
+    )
+    assert result.passed == 1
+
+
 async def test_run_ab_filters_by_category(patched_world) -> None:
     cases = [
         _passing_case(),  # category=count

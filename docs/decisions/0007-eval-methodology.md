@@ -169,3 +169,31 @@ has no way to fabricate a believable prior `attempts` list anyway.
   follow-up category where deterministic checks are weaker.
 * **As needed**: grow `cases.yaml` to ≥100 cases. Each new feature
   ADR should include the cases it expects to move.
+
+### Deferred from the Week 6 review
+
+Items consciously scoped out after the post-merge audit. Each is
+cheap enough on its own; bundled they would inflate the surface area
+of the harness past the "minimum useful" bar Week 6 was aiming for.
+
+* **Report the `total_tokens` column as estimated.** `_estimate_tokens_from_messages`
+  is `chars/4`; the docstring says so but the report just shows
+  `+192`. Rename to `est_total_chars` or surface a `*estimated`
+  footnote when LLM-judge / real provider hooks land.
+* **Fail-fast on systemic breakage.** A bad `SILICONFLOW_API_KEY`
+  currently produces a flat 0% report rather than a loud crash. A
+  "if every case in the first N hits the same exception class, abort"
+  rule would surface infra outages immediately. Low priority since
+  the operator notices a flat 0% report anyway.
+* **`feature_flags` via `contextvars.ContextVar`.** Today the
+  override mutates module-level globals; safe given the eval runs
+  cases sequentially in a CLI process, but unsafe if the eval is
+  ever imported into the live FastAPI process. Cheap insurance to
+  add before any future "trigger eval from `/admin/eval`" feature.
+* **Warm-up case before the timed run.** Provider TLS / connection
+  pool setup biases the first case's latency upward. For 3-case
+  follow-up filters this can shift `avg_latency_ms` by 100 ms+.
+* **Markdown header annotates filtered case count.** The
+  `dialogue_context` A/B reports "n cases per side" where n is the
+  filtered count; readers comparing reports across experiments may
+  read it as if all three used the same 32-case set.
