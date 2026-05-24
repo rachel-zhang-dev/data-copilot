@@ -263,7 +263,7 @@ schemas, and why a structured `insight` envelope vs a separate
 | 8 ✅ | Visualisation generation + insight summaries |
 | 9 | Caching layer · cost report · retries with exponential backoff |
 | 10 | Next.js front-end with streaming responses |
-| 11 | Docker production image · Fly.io deploy · monitoring |
+| 11 | Docker production image · Fly.io deploy · monitoring · swap embedding cache to Redis if scaling out |
 | 12 | Polish, demo video, blog series, simplify onboarding |
 
 ## Project layout
