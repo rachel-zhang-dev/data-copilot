@@ -38,6 +38,13 @@ from copilot.agent.prompts import (
 from copilot.agent.sql_safety import SqlSafetyError, strip_fence, validate_and_rewrite
 from copilot.agent.state import AgentState, Attempt, ErrorClass, Intent
 from copilot.config import get_settings
+from copilot.cost import (
+    CostBreakdown,
+    db_select_cost,
+    estimate_tokens_from_chars,
+    llm_call_cost,
+    usage_from_response,
+)
 from copilot.db import get_schema_ddl, run_select
 from copilot.llm import get_llm
 
@@ -146,6 +153,25 @@ def _preview_rows(rows: list[dict[str, Any]], limit: int = 20) -> str:
     return json.dumps(rows[:limit], default=str, ensure_ascii=False, indent=2)
 
 
+def _llm_cost(response: AIMessage, prompt_text: str) -> CostBreakdown:
+    """Build a ``llm_call_cost`` increment from one LLM round-trip.
+
+    Prefers ``response.response_metadata.token_usage`` (populated by
+    DeepSeek and OpenAI). When the provider doesn't surface usage we
+    fall back to ``chars/4`` over the prompt + completion — wrong by
+    ~2x on CJK strings but trends survive, which is what the cost
+    panel needs.
+    """
+    model = get_settings().deepseek_model
+    usage = usage_from_response(response)
+    if usage is not None:
+        tokens_in, tokens_out = usage
+    else:
+        tokens_in = estimate_tokens_from_chars(prompt_text)
+        tokens_out = estimate_tokens_from_chars(_message_text(response))
+    return llm_call_cost(model, tokens_in=tokens_in, tokens_out=tokens_out)
+
+
 # ---------------------------------------------------------------------------
 # Nodes — chitchat branch
 # ---------------------------------------------------------------------------
@@ -170,7 +196,7 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
     if raw and raw[0] in {"data", "chitchat"}:
         intent = raw[0]  # type: ignore[assignment]
     log.info("classify_intent -> %s", intent)
-    return {"intent": intent}
+    return {"intent": intent, "cost": _llm_cost(response, state["question"])}
 
 
 def small_talk_node(state: AgentState) -> dict[str, Any]:
@@ -187,7 +213,7 @@ def small_talk_node(state: AgentState) -> dict[str, Any]:
         ]
     )
     answer = _message_text(response).strip()
-    return {"answer": answer}
+    return {"answer": answer, "cost": _llm_cost(response, state["question"])}
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +282,7 @@ def generate_sql_node(state: AgentState) -> dict[str, Any]:
         "sql": sql,
         "relevant_schema": schema,
         "error": None,
+        "cost": _llm_cost(response, user_msg),
     }
 
 
@@ -335,8 +362,13 @@ def execute_sql_node(state: AgentState) -> dict[str, Any]:
                     turn_idx=turn_idx,
                 )
             ],
+            "cost": db_select_cost(),
         }
-    return {"sql_result": rows, "row_count": len(rows)}
+    return {
+        "sql_result": rows,
+        "row_count": len(rows),
+        "cost": db_select_cost(),
+    }
 
 
 def summarize_result_node(state: AgentState) -> dict[str, Any]:
@@ -361,7 +393,14 @@ def summarize_result_node(state: AgentState) -> dict[str, Any]:
         row_count=state.get("row_count", len(rows)),
         rows_preview=_preview_rows(rows),
     )
-    llm = get_llm(temperature=0.2)
+    # Week 9: ask DeepSeek for guaranteed-JSON output. The
+    # ``parse_insight`` fallback is still there (defence in depth) but
+    # JSON mode pushes the success rate close to 100% so the structured
+    # insight envelope becomes the common case, not the lucky case.
+    llm = get_llm(
+        temperature=0.2,
+        model_kwargs={"response_format": {"type": "json_object"}},
+    )
     response = llm.invoke(
         [
             SystemMessage(content=SUMMARIZE_SYSTEM),
@@ -370,13 +409,14 @@ def summarize_result_node(state: AgentState) -> dict[str, Any]:
     )
     raw = _message_text(response).strip()
 
+    cost = _llm_cost(response, user_msg)
     insight = parse_insight(raw)
     if insight is not None:
         log.info("summarize: insight parsed (%d bullets)", len(insight.bullets))
-        return insight_to_state(insight)
+        return {**insight_to_state(insight), "cost": cost}
 
     log.warning("summarize: insight JSON parse failed; falling back to plain text")
-    return {"answer": raw}
+    return {"answer": raw, "cost": cost}
 
 
 def finalize_error_node(state: AgentState) -> dict[str, Any]:

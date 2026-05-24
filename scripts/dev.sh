@@ -13,6 +13,8 @@
 #   ./scripts/dev.sh ask --cid ID "...". # continue a thread (multi-turn dialogue)
 #   ./scripts/dev.sh ask --cid ID --resume approve|reject
 #                                      # respond to a pending HITL prompt (week 7)
+#   ./scripts/dev.sh ask --show-cost "..."
+#                                      # also print the cost breakdown (week 9)
 #   ./scripts/dev.sh eval [--experiment NAME] [--dry-run]
 #                                      # run A/B eval harness (week 6)
 
@@ -82,6 +84,7 @@ case "$cmd" in
     # question is ignored.
     conversation_id=""
     resume=""
+    show_cost=""
     while true; do
       case "${1:-}" in
         --cid)
@@ -91,6 +94,10 @@ case "$cmd" in
         --resume)
           resume="${2:?--resume requires approve|reject}"
           shift 2
+          ;;
+        --show-cost)
+          show_cost="1"
+          shift
           ;;
         *)
           break
@@ -103,12 +110,13 @@ case "$cmd" in
     fi
     question="${*:-What can you do?}"
     cd apps/api
-    # Pass the conversation id, question, and resume mode through the
-    # environment to avoid bash-vs-python quoting pitfalls inside the
-    # heredoc.
+    # Pass the conversation id, question, resume mode, and cost flag
+    # through the environment to avoid bash-vs-python quoting pitfalls
+    # inside the heredoc.
     export DC_CONVERSATION_ID="$conversation_id"
     export DC_QUESTION="$question"
     export DC_RESUME="$resume"
+    export DC_SHOW_COST="$show_cost"
     uv run python <<'PYEOF'
 import asyncio
 import json
@@ -202,6 +210,22 @@ async def main() -> None:
                 if len(spec_preview) > 400:
                     spec_preview = spec_preview[:400] + "..."
                 print(spec_preview)
+        # Week 9: cumulative cost across the conversation. Only print
+        # when --show-cost was passed so the default output stays clean.
+        if os.environ.get("DC_SHOW_COST") and result.get("cost"):
+            c = result["cost"]
+            print("--- COST (cumulative) ---")
+            print(
+                f"  llm_calls={c.get('llm_calls', 0)} "
+                f"embedding_calls={c.get('embedding_calls', 0)} "
+                f"db_explain={c.get('db_explain_calls', 0)} "
+                f"db_select={c.get('db_select_calls', 0)}"
+            )
+            print(
+                f"  tokens: in={c.get('est_tokens_in', 0)} "
+                f"out={c.get('est_tokens_out', 0)}"
+            )
+            print(f"  est_usd=${c.get('est_usd', 0.0):.6f}")
         print("--- ANSWER ---")
         print(result.get("answer", ""))
         print("--- THREAD ---")

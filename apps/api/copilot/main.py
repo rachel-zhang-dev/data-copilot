@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.8.0",
+    version="0.9.0",
     lifespan=lifespan,
 )
 
@@ -205,6 +205,10 @@ class AskResponse(BaseModel):
     # (the UI renders those directly from ``rows``).
     chart_kind: Literal["kpi", "bar", "line", "grouped_bar", "table"] | None = None
     chart_spec: dict[str, Any] | None = None
+    # Week 9 — cumulative cost breakdown for the *conversation* up to
+    # and including this turn. Always present (zero-initialised) so
+    # consumers never have to ``.get(...)`` defensively.
+    cost: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +312,7 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     else:
         attempts_count = len(this_turn_failures) + 1
 
+    cost = result.get("cost")
     if pending is not None:
         # The graph is paused at ``await_confirmation``. We surface the
         # full diagnostic payload to the caller and an empty answer —
@@ -324,6 +329,7 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
             attempts_history=list(this_turn_failures) if debug else None,
             status="pending_confirmation",
             pending_risk=pending,
+            cost=cost,
         )
 
     return AskResponse(
@@ -341,4 +347,5 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
         insight=result.get("insight"),
         chart_kind=result.get("chart_kind"),
         chart_spec=result.get("chart_spec"),
+        cost=cost,
     )

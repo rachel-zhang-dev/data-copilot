@@ -247,6 +247,46 @@ heuristic decision table, why Vega-Lite over Chart.js / custom
 schemas, and why a structured `insight` envelope vs a separate
 `insight_node`.
 
+### Caching, cost reporting, and retry resilience (week 9)
+
+Three operational improvements ship in Week 9:
+
+- **Embedding cache.** A process-local `TTLCache` keyed by
+  `(model, text)` short-circuits repeat questions before the
+  SiliconFlow API call. Enabled by default; tunable via
+  `EMBEDDING_CACHE_*` env vars. Multi-replica deploys (Week 11)
+  swap the backend to Redis behind the same interface.
+- **Cost report.** Every node publishes a small `CostBreakdown`
+  increment into a cumulative `state.cost` (LLM / embedding / DB
+  call counts plus token + USD estimates from a hand-maintained
+  unit-price table). Surfaced on `AskResponse.cost` and via
+  `./scripts/dev.sh ask --show-cost "..."`. The headline pitch
+  ("cost-aware text-to-SQL") becomes a number rather than a
+  promise.
+- **Retries with exponential backoff.** LangChain's
+  `ChatOpenAI.max_retries` (default 3) handles transient LLM
+  failures; a `tenacity` wrapper around `embed_query` does the
+  same for the embedding provider. Both retry only on 429 / 5xx /
+  timeout — domain errors still flow to the self-healing loop.
+
+```bash
+./scripts/dev.sh ask --show-cost "How many customers in Germany?"
+# --- COST (cumulative) ---
+#   llm_calls=3 embedding_calls=1 db_explain=1 db_select=1
+#   tokens: in=154 out=75
+#   est_usd=$0.000042
+# --- ANSWER ---
+# There are 11 customers based in Germany.
+```
+
+Week 8's `summarize_result_node` also flips on DeepSeek's JSON
+mode (`response_format={"type": "json_object"}`) so the structured
+`Insight` envelope becomes the common case rather than the lucky
+case. The `parse_insight` fallback stays in place as defence in
+depth. See [ADR 0010](docs/decisions/0010-caching-and-resilience.md)
+for why only embeddings get cached, why in-memory before Redis,
+and the per-token USD pricing table.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -261,7 +301,7 @@ schemas, and why a structured `insight` envelope vs a separate
 | 6 ✅ | Evaluation set + 3 A/B experiments |
 | 7 ✅ | Human-in-the-loop confirmation for expensive queries |
 | 8 ✅ | Visualisation generation + insight summaries |
-| 9 | Caching layer · cost report · retries with exponential backoff |
+| 9 ✅ | Caching layer · cost report · retries with exponential backoff |
 | 10 | Next.js front-end with streaming responses |
 | 11 | Docker production image · Fly.io deploy · monitoring · swap embedding cache to Redis if scaling out |
 | 12 | Polish, demo video, blog series, simplify onboarding |

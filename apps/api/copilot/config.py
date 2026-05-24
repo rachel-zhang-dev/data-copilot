@@ -146,6 +146,60 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------- Visualisation (week 8) ----------
+    chart_max_rows: int = Field(
+        default=50,
+        ge=1,
+        le=10_000,
+        description=(
+            "Result-row ceiling for emitting a real chart spec. Above "
+            "this, ``visualize_node`` returns ``chart_kind='table'`` "
+            "and no Vega-Lite spec (a 200-bar chart is unreadable)."
+        ),
+    )
+
+    # ---------- Caching & resilience (week 9) ----------
+    embedding_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True, ``embed_query`` results are stored in a process-"
+            "local TTL cache keyed by ``(model, text)``. Disable to "
+            "force a fresh call on every question (used by the "
+            "embedding_cache A/B in the eval harness)."
+        ),
+    )
+    embedding_cache_max_size: int = Field(
+        default=1024,
+        ge=1,
+        le=1_000_000,
+        description="Maximum number of cached embedding vectors.",
+    )
+    embedding_cache_ttl_seconds: int = Field(
+        default=3_600,
+        ge=1,
+        le=30 * 24 * 3_600,
+        description="How long a cached embedding stays valid (default 1 h).",
+    )
+    llm_max_retries: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description=(
+            "How many times the LangChain LLM client retries on 429 / "
+            "5xx / timeout. 0 disables retries. Backoff is exponential "
+            "and managed by LangChain internally."
+        ),
+    )
+    embedding_max_retries: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description=(
+            "How many times the embedding wrapper retries on transient "
+            "failures (429 / 5xx / timeout). Mirrors ``llm_max_retries``."
+        ),
+    )
+
     # ---------- API ----------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

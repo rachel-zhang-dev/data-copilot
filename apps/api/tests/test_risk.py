@@ -55,9 +55,13 @@ def test_check_risk_skipped_when_threshold_zero(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_check_risk_low_cost_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Low-cost SQL falls through to ``execute_sql`` (no ``pending_risk``)
+    but still publishes a ``db_explain_calls`` cost increment (week 9)."""
     monkeypatch.setattr(get_settings(), "risk_explain_cost_threshold", 1000.0)
     monkeypatch.setattr(risk_mod, "explain_cost", lambda *_a, **_k: 12.3)
-    assert check_risk_node(_state("SELECT 1")) == {}
+    out = check_risk_node(_state("SELECT 1"))
+    assert "pending_risk" not in out
+    assert out.get("cost") == {"db_explain_calls": 1}
 
 
 def test_check_risk_high_cost_pends(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,14 +79,17 @@ def test_check_risk_high_cost_pends(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_risk_explain_failure_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failing EXPLAIN must never block the user — the worst case is
     that an expensive query runs without a confirm prompt, which is
-    identical to pre-week-7 behaviour."""
+    identical to pre-week-7 behaviour. Cost still ticks (week 9) so
+    observability sees the attempted call."""
     monkeypatch.setattr(get_settings(), "risk_explain_cost_threshold", 100.0)
 
     def _boom(*_a: Any, **_k: Any) -> float:
         raise RuntimeError("planner timed out")
 
     monkeypatch.setattr(risk_mod, "explain_cost", _boom)
-    assert check_risk_node(_state("SELECT * FROM ok")) == {}
+    out = check_risk_node(_state("SELECT * FROM ok"))
+    assert "pending_risk" not in out
+    assert out.get("cost") == {"db_explain_calls": 1}
 
 
 # ---------------------------------------------------------------------------

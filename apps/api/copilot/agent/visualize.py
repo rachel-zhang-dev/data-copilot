@@ -35,6 +35,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from copilot.agent.state import AgentState
+from copilot.config import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -44,10 +45,23 @@ FieldKind = Literal["quantitative", "temporal", "nominal"]
 VEGA_LITE_SCHEMA_URL = "https://vega.github.io/schema/vega-lite/v5.json"
 """Pinned to v5; matches what ``react-vega`` ships with as of 2026 Q1."""
 
-# Result sets above this row count are rendered as a table regardless
-# of shape — a 200-bar chart is unreadable and a 200-row scatter is
-# worse. Lowered later when we add pagination / sampling.
-MAX_CHART_ROWS = 50
+# Default ceiling for the row count above which we render as a table
+# regardless of shape — a 200-bar chart is unreadable. Settings's
+# ``chart_max_rows`` (week 9) overrides this at runtime; the constant
+# is kept as the test-time default and as ``MAX_CHART_ROWS`` for
+# back-compat with existing test imports.
+_DEFAULT_MAX_CHART_ROWS = 50
+MAX_CHART_ROWS = _DEFAULT_MAX_CHART_ROWS
+
+
+def _effective_max_chart_rows() -> int:
+    """Resolve the runtime row cap, falling back to the module default
+    when ``Settings`` isn't available (some unit tests instantiate the
+    visualize module without booting config)."""
+    try:
+        return get_settings().chart_max_rows
+    except Exception:
+        return _DEFAULT_MAX_CHART_ROWS
 
 # ---------------------------------------------------------------------------
 # Type inference
@@ -104,7 +118,7 @@ def classify_shape(rows: list[dict[str, Any]]) -> ChartKind:
     """
     if not rows:
         return "table"
-    if len(rows) > MAX_CHART_ROWS:
+    if len(rows) > _effective_max_chart_rows():
         return "table"
 
     cols = list(rows[0].keys())

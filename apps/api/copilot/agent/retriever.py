@@ -26,8 +26,9 @@ from sqlalchemy import text
 
 from copilot.agent.state import AgentState
 from copilot.config import get_settings
+from copilot.cost import embedding_call_cost, estimate_tokens_from_chars
 from copilot.db import get_engine, get_foreign_keys, get_schema_ddl, get_table_ddl, list_tables
-from copilot.embeddings import EmbeddingError, get_embedder
+from copilot.embeddings import EmbeddingError, embed_query, last_was_cache_hit
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,10 @@ def vector_search_tables(question: str, k: int) -> list[str]:
             fall back).
     """
     try:
-        q_vec = get_embedder().embed_query(question)
+        # Cached + retried; see ``copilot.embeddings.embed_query``.
+        q_vec = embed_query(question)
+    except EmbeddingError:
+        raise
     except Exception as exc:
         raise EmbeddingError(f"embed_query failed: {exc}") from exc
 
@@ -137,12 +141,23 @@ def retrieve_schema_node(state: AgentState) -> dict[str, Any]:
 
     settings = get_settings()
     question = state["question"]
+    cost_increment: dict[str, Any] = {}
 
     try:
         all_tables = list_tables()
         named = directly_named_tables(question, all_tables)
         try:
             top_k = set(vector_search_tables(question, settings.schema_top_k))
+            # ``vector_search_tables`` called ``embed_query`` internally;
+            # only charge for the embedding when it actually hit the
+            # wire (cache miss).
+            if not last_was_cache_hit():
+                cost_increment = {
+                    "cost": embedding_call_cost(
+                        settings.embedding_model,
+                        tokens_in=estimate_tokens_from_chars(question),
+                    )
+                }
         except (EmbeddingError, RuntimeError) as exc:
             # If the question already names tables, those alone are
             # enough; otherwise we have to fall back to full schema.
@@ -165,11 +180,11 @@ def retrieve_schema_node(state: AgentState) -> dict[str, Any]:
             sorted(top_k),
             sorted(expanded),
         )
-        return {"relevant_schema": schema}
+        return {"relevant_schema": schema, **cost_increment}
 
     except Exception as exc:
         log.warning(
             "schema retrieval failed (%s); falling back to full DDL",
             exc,
         )
-        return {"relevant_schema": get_schema_ddl()}
+        return {"relevant_schema": get_schema_ddl(), **cost_increment}

@@ -43,6 +43,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from copilot.agent.prompts import COMPACTION_SYSTEM, COMPACTION_USER_TEMPLATE
 from copilot.agent.state import AgentState, Turn
 from copilot.config import get_settings
+from copilot.cost import (
+    CostBreakdown,
+    estimate_tokens_from_chars,
+    llm_call_cost,
+    usage_from_response,
+)
 from copilot.llm import get_llm
 
 log = logging.getLogger(__name__)
@@ -124,7 +130,7 @@ def compact_history_node(state: AgentState) -> dict[str, Any]:
     )
 
     try:
-        summary = _summarise_with_llm(older)
+        summary, compaction_cost = _summarise_with_llm(older)
     except Exception as exc:
         log.warning("compaction LLM failed (%s); hard-truncating instead", exc)
         return {"dialogue": {"replace": list(recent)}}
@@ -133,19 +139,38 @@ def compact_history_node(state: AgentState) -> dict[str, Any]:
         "role": "assistant",
         "content": f"[Earlier in this conversation] {summary}",
     }
-    return {"dialogue": {"replace": [summary_turn, *recent]}}
+    return {
+        "dialogue": {"replace": [summary_turn, *recent]},
+        "cost": compaction_cost,
+    }
 
 
-def _summarise_with_llm(older: list[Turn]) -> str:
-    """Ask the LLM to summarise the older turns into a brief paragraph."""
+def _summarise_with_llm(older: list[Turn]) -> tuple[str, CostBreakdown]:
+    """Ask the LLM to summarise the older turns into a brief paragraph.
+
+    Returns ``(summary_text, cost_increment)`` so the caller can fold
+    the LLM call into the cumulative ``state.cost`` even on the
+    compaction path (which would otherwise be invisible to operators).
+    """
+    user_msg = COMPACTION_USER_TEMPLATE.format(turns=_format_old_turns(older))
     llm = get_llm(temperature=0.2, max_tokens=400)
     response = llm.invoke(
         [
             SystemMessage(content=COMPACTION_SYSTEM),
-            HumanMessage(content=COMPACTION_USER_TEMPLATE.format(turns=_format_old_turns(older))),
+            HumanMessage(content=user_msg),
         ]
     )
     content = response.content
     if isinstance(content, list):
         content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
-    return str(content).strip()
+    summary = str(content).strip()
+
+    model = get_settings().deepseek_model
+    usage = usage_from_response(response)
+    if usage is not None:
+        tokens_in, tokens_out = usage
+    else:
+        tokens_in = estimate_tokens_from_chars(user_msg)
+        tokens_out = estimate_tokens_from_chars(summary)
+    cost = llm_call_cost(model, tokens_in=tokens_in, tokens_out=tokens_out)
+    return summary, cost

@@ -32,13 +32,27 @@ def get_llm(temperature: float = 0.0, **kwargs: object) -> ChatOpenAI:
             tasks that benefit from variety (summarisation, insight
             generation, brainstorming).
         **kwargs: any extra arg accepted by ``ChatOpenAI``
-            (``max_tokens``, ``timeout``, ``streaming``, …).
+            (``max_tokens``, ``timeout``, ``streaming``,
+            ``response_format``, …). Caller-supplied values override
+            our defaults — e.g. ``summarize_result_node`` passes
+            ``response_format={"type": "json_object"}`` to force
+            DeepSeek's JSON mode for the insight envelope (week 9).
+
+    Resilience (week 9): every client is configured with
+    ``max_retries=LLM_MAX_RETRIES``. LangChain runs an internal
+    exponential backoff between attempts on 429 / 5xx / timeout,
+    matching what the embedding wrapper does. Set
+    ``LLM_MAX_RETRIES=0`` in ``.env`` to disable.
     """
     settings = get_settings()
-    return ChatOpenAI(
-        model=settings.deepseek_model,
-        api_key=SecretStr(settings.deepseek_api_key),
-        base_url=settings.deepseek_base_url,
-        temperature=temperature,
-        **kwargs,  # type: ignore[arg-type]
-    )
+    # ``kwargs`` overrides our defaults — that's why ``max_retries`` is
+    # in the base dict, not passed at the end.
+    base: dict[str, object] = {
+        "model": settings.deepseek_model,
+        "api_key": SecretStr(settings.deepseek_api_key),
+        "base_url": settings.deepseek_base_url,
+        "temperature": temperature,
+        "max_retries": settings.llm_max_retries,
+    }
+    base.update(kwargs)
+    return ChatOpenAI(**base)  # type: ignore[arg-type]

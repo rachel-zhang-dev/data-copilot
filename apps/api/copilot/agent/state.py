@@ -37,6 +37,8 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
+from copilot.cost import CostBreakdown, add_cost
+
 Intent = Literal["data", "chitchat"]
 """Top-level intent. Decided by ``classify_intent_node`` and used by
 ``route_after_classify`` to branch the graph."""
@@ -207,3 +209,14 @@ class AgentState(TypedDict, total=False):
     ``bar`` / ``line`` / ``grouped_bar`` results. ``None`` for
     ``kpi`` / ``table`` (the UI renders those directly from
     ``sql_result``) and outside the data success path."""
+
+    # ---------- Outputs added in week 9 ----------
+    cost: Annotated[CostBreakdown, add_cost]
+    """Cumulative cost breakdown for the conversation (LLM / embedding
+    / DB call counts plus token + USD estimates). The reducer field-
+    wise sums successive node increments — across self-heal retries,
+    HITL resumes, and follow-up turns — so the value is monotonically
+    non-decreasing. Callers wanting just *this turn's* contribution
+    can diff against the prior turn's checkpointed cost; the CLI /
+    eval grader both opt to show cumulative because that's the number
+    operators care about ("how much has this conversation cost me?")."""

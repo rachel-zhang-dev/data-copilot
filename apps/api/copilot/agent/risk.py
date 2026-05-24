@@ -39,6 +39,7 @@ from langgraph.types import interrupt
 
 from copilot.agent.state import AgentState, Attempt
 from copilot.config import get_settings
+from copilot.cost import db_explain_cost
 from copilot.db import explain_cost
 
 log = logging.getLogger(__name__)
@@ -90,18 +91,23 @@ def check_risk_node(state: AgentState) -> dict[str, Any]:
         log.info("check_risk: threshold disabled, skipping")
         return {}
 
+    explain_cost_increment = db_explain_cost()
     try:
         cost = explain_cost(sql, timeout_ms=settings.risk_explain_timeout_ms)
     except Exception as exc:
         log.warning("check_risk: EXPLAIN failed (%s); treating as low risk", exc)
-        return {}
+        # Still charge for the attempted call so observability sees it.
+        return {"cost": explain_cost_increment}
 
     if cost <= threshold:
         log.info("check_risk: cost=%.1f <= threshold=%.1f, low risk", cost, threshold)
-        return {}
+        return {"cost": explain_cost_increment}
 
     log.info("check_risk: cost=%.1f > threshold=%.1f, will request confirmation", cost, threshold)
-    return {"pending_risk": _build_pending_risk(sql, cost, threshold)}
+    return {
+        "pending_risk": _build_pending_risk(sql, cost, threshold),
+        "cost": explain_cost_increment,
+    }
 
 
 def await_confirmation_node(state: AgentState) -> dict[str, Any]:

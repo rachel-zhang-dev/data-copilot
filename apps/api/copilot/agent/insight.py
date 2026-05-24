@@ -24,7 +24,7 @@ import logging
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,19 @@ class Insight(BaseModel):
     metric_highlights: list[MetricHighlight] = Field(
         default_factory=list, max_length=_MAX_HIGHLIGHTS
     )
+
+    @field_validator("bullets")
+    @classmethod
+    def _cap_bullet_length(cls, v: list[str]) -> list[str]:
+        """Per-bullet length cap (week 9). The ``max_length`` above
+        caps how many bullets we accept; this caps how long each
+        bullet can be so a misbehaving LLM cannot bloat the response
+        with one 50 KB bullet. Truncate-with-ellipsis rather than
+        reject — partial information is more useful than nothing."""
+        return [
+            b if len(b) <= _MAX_BULLET_CHARS else b[: _MAX_BULLET_CHARS - 3] + "..."
+            for b in v
+        ]
 
 
 # A model occasionally wraps its JSON in ```json ... ``` fences even
