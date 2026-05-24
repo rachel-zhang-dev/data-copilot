@@ -21,6 +21,7 @@ with an opaque pgvector error later.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 
 from langchain_openai import OpenAIEmbeddings
 from pydantic import SecretStr
@@ -112,29 +113,28 @@ def embed_query(text: str) -> list[float]:
     return vec
 
 
-# Module-level "did the most recent embed_query hit the cache?" flag.
-# This is intentionally process-local rather than passed through the
-# return signature: callers who care (the cost reducer) read it once
-# right after calling embed_query, before any other thread could
-# concurrently overwrite it. The single-threaded event-loop model
-# makes this safe in practice.
-_last_was_hit = False
+# Week 9 first shipped this as a plain module global; the week-11
+# audit flagged that as unsafe if anyone ever runs the agent through
+# ``asyncio.gather`` or a thread pool. ``ContextVar`` gives every
+# concurrent task its own value at no extra runtime cost; the public
+# helpers ``last_was_cache_hit()`` / ``_set_last_hit()`` keep the
+# same surface so callers don't change.
+_last_was_hit: ContextVar[bool] = ContextVar("embed_last_was_hit", default=False)
 
 
 def _set_last_hit(hit: bool) -> None:
-    global _last_was_hit
-    _last_was_hit = hit
+    _last_was_hit.set(hit)
 
 
 def last_was_cache_hit() -> bool:
-    """Return True iff the most recent ``embed_query`` was a cache hit.
+    """Return True iff the most recent ``embed_query`` in **this
+    context** was a cache hit.
 
-    Used by the cost reducer to charge only for misses. Caller must
-    invoke this immediately after ``embed_query`` to avoid clobbering
-    by a subsequent call (the agent's nodes run sequentially so this
-    is a safe contract in practice).
+    Used by the cost reducer to charge only for misses. Concurrent
+    invocations from ``asyncio.gather`` or worker threads each see
+    their own value thanks to ``ContextVar``.
     """
-    return _last_was_hit
+    return _last_was_hit.get()
 
 
 # Retry-classifier helpers -------------------------------------------------

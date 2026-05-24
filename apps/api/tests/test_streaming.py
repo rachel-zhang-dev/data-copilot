@@ -275,6 +275,46 @@ def test_resume_on_non_paused_thread_400(client: TestClient) -> None:
     assert "no pending confirmation" in r.json()["detail"]
 
 
+def test_heartbeat_emitted_during_quiet_periods(client: TestClient) -> None:
+    """The streaming generator wraps ``astream`` in ``asyncio.wait_for``
+    so reverse-proxy idle timers don't drop the connection. Drive a
+    slow stream and assert at least one ``: heartbeat`` comment line
+    appears in the response body."""
+    import asyncio
+
+    g = client._graph  # type: ignore[attr-defined]
+
+    # Patch the module's heartbeat interval down to ~50ms for the test
+    # so we don't have to wait the production 15s default.
+    import copilot.main as main_mod
+
+    original_interval = main_mod._HEARTBEAT_INTERVAL_S
+    main_mod._HEARTBEAT_INTERVAL_S = 0.05
+
+    async def _slow_gen():
+        # First chunk after enough quiet time that ≥2 heartbeats fire.
+        await asyncio.sleep(0.2)
+        yield {"classify_intent": {"intent": "data"}}
+
+    def _astream(*_a: Any, **_k: Any):
+        return _slow_gen()
+
+    g.astream = _astream
+    snap = MagicMock()
+    snap.values = {"turn_index": 1}
+    g.aget_state = AsyncMock(return_value=snap)
+
+    try:
+        with client.stream("POST", "/ask/stream", json={"question": "q"}) as r:
+            body = "".join(r.iter_text())
+    finally:
+        main_mod._HEARTBEAT_INTERVAL_S = original_interval
+
+    # SSE comment lines start with ":" — count at least one in the body.
+    heartbeats = [line for line in body.splitlines() if line.startswith(": heartbeat")]
+    assert len(heartbeats) >= 1, f"expected ≥1 heartbeat, got body: {body!r}"
+
+
 def test_resume_on_paused_thread_streams_continuation(client: TestClient) -> None:
     """Resume after pause: stream picks up at the interrupted node and
     runs to completion."""

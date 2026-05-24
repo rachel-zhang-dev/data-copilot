@@ -19,9 +19,11 @@ Reading guide
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,9 +33,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, model_validator
 
 from copilot.agent import build_graph
+from copilot.cache import get_embedding_cache
 from copilot.checkpointer import (
     conversation_lock,
     dispose_checkpointer,
@@ -44,6 +48,11 @@ from copilot.config import get_settings
 from copilot.db import dispose_engine, get_engine, get_schema_ddl
 
 log = logging.getLogger(__name__)
+
+
+# Module-level boot wall clock so ``/admin/stats`` can report uptime
+# without needing a heavier process-info dep.
+_BOOT_TIME = time.time()
 
 
 def _configure_langsmith() -> None:
@@ -98,20 +107,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.10.0",
+    version="0.11.0",
     lifespan=lifespan,
 )
 
-# CORS lets the Next.js dev server (port 3000) call this API (port 8000)
-# from a browser. In production we will lock this down to the real frontend
-# origin. Middlewares run on every request, before the route handler.
+# CORS is driven by ``CORS_ORIGINS`` (comma-separated). Default permits
+# the local Next.js dev server; production deploys (Fly.io, week 11)
+# override the env to the real front-end origin so the middleware never
+# accidentally accepts unknown origins.
+_cors_origins = get_settings().cors_origins_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+log.info("CORS allow_origins=%s", _cors_origins)
+
+
+# Prometheus metrics (week 11). Instrumentator hooks into FastAPI's
+# ASGI lifecycle to populate the default request/response counters
+# (latency, status codes, in-flight gauges). When ``metrics_enabled``
+# is False (tests, CI) we skip the registration so the default
+# Prometheus registry stays clean and parallel tests don't trip the
+# "metric already registered" guard.
+if get_settings().metrics_enabled:
+    _instrumentator = Instrumentator(
+        should_group_status_codes=True,
+        should_ignore_untemplated=True,
+        excluded_handlers=["/metrics", "/health"],
+    )
+    _instrumentator.instrument(app).expose(
+        app,
+        endpoint="/metrics",
+        include_in_schema=False,
+        tags=["observability"],
+    )
+    log.info("/metrics exposed via prometheus_fastapi_instrumentator")
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +259,52 @@ async def health() -> dict[str, str]:
     container is still alive. Return 200 fast, no I/O.
     """
     return {"status": "ok", "version": app.version}
+
+
+@app.get("/admin/stats", tags=["observability"])
+async def admin_stats() -> dict[str, Any]:
+    """Operator dashboard endpoint (week 11).
+
+    Surfaces:
+      * Embedding cache stats (``hits`` / ``misses`` / ``hit_rate`` /
+        ``evictions`` / ``size`` / ``max_size`` / ``ttl_seconds``).
+      * Process uptime in seconds.
+      * Settings snapshot of the knobs ops cares about (model, cache
+        backend, retry budgets) — no secrets.
+
+    Deliberately public for now; ADR 0006 puts proper admin auth on
+    the Week 13 roadmap. The endpoint reads no PII and the cache
+    counters are only useful with the live URL.
+    """
+    settings = get_settings()
+    cache = get_embedding_cache()
+    s = cache.stats()
+    return {
+        "version": app.version,
+        "uptime_seconds": int(time.time() - _BOOT_TIME),
+        "embedding_cache": {
+            "hits": s.hits,
+            "misses": s.misses,
+            "size": s.size,
+            "evictions": s.evictions,
+            "max_size": s.max_size,
+            "ttl_seconds": s.ttl_seconds,
+            "hit_rate": round(s.hit_rate, 3),
+            "backend": (
+                "redis" if settings.redis_url else "in-memory"
+            ),
+        },
+        "settings": {
+            "deepseek_model": settings.deepseek_model,
+            "embedding_model": settings.embedding_model,
+            "embedding_cache_enabled": settings.embedding_cache_enabled,
+            "embedding_cache_max_size": settings.embedding_cache_max_size,
+            "embedding_cache_ttl_seconds": settings.embedding_cache_ttl_seconds,
+            "llm_max_retries": settings.llm_max_retries,
+            "risk_explain_cost_threshold": settings.risk_explain_cost_threshold,
+            "app_env": settings.app_env,
+        },
+    }
 
 
 def _first_interrupt_payload(result: dict[str, Any]) -> dict[str, Any] | None:
@@ -366,6 +445,13 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
 # heartbeat shape only touches one place.
 _SSE_SEP = "\n\n"
 
+# Heartbeat cadence (week 11). Reverse proxies (Cloudflare ≈100 s, AWS
+# ALB 60 s, Fly.io 60 s by default) drop idle SSE connections. We emit
+# a comment line every ``_HEARTBEAT_INTERVAL_S`` seconds when no real
+# event is in flight; clients ignore comment lines but the bytes keep
+# the socket alive.
+_HEARTBEAT_INTERVAL_S = 15.0
+
 
 def _sse_event(event: str, data: Any) -> str:
     """Format one SSE event. ``data`` is JSON-serialised so the client's
@@ -373,6 +459,13 @@ def _sse_event(event: str, data: Any) -> str:
     to worry about newlines in nested strings."""
     payload = json.dumps(data, default=str, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}{_SSE_SEP}"
+
+
+def _sse_heartbeat() -> str:
+    """SSE comment line. Per the spec, any line starting with ``:`` is a
+    comment and is ignored by EventSource implementations. We use it as
+    a no-op keepalive."""
+    return f": heartbeat {_HEARTBEAT_INTERVAL_S:.0f}s\n\n"
 
 
 # Node names that are pure plumbing and add visual noise without telling
@@ -421,7 +514,24 @@ async def _stream_ask(
     interrupted = False
     try:
         async with conversation_lock(conversation_id):
-            async for update in graph.astream(payload, config=config, stream_mode="updates"):
+            stream = graph.astream(
+                payload, config=config, stream_mode="updates"
+            ).__aiter__()
+
+            # Pull chunks with a heartbeat cadence: any quiet period
+            # longer than ``_HEARTBEAT_INTERVAL_S`` yields a comment
+            # line to keep reverse-proxy idle timers honest.
+            while True:
+                try:
+                    update = await asyncio.wait_for(
+                        stream.__anext__(), timeout=_HEARTBEAT_INTERVAL_S
+                    )
+                except TimeoutError:
+                    yield _sse_heartbeat()
+                    continue
+                except StopAsyncIteration:
+                    break
+
                 # LangGraph 1.2 surfaces interrupts inline as a chunk
                 # with key ``__interrupt__`` whose value is a tuple of
                 # ``Interrupt`` objects.

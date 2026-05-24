@@ -1,0 +1,59 @@
+# Fly.io configuration for the data-copilot API.
+#
+# Deploy from the repo root:
+#
+#   fly deploy -c apps/api/fly.toml --dockerfile apps/api/Dockerfile
+#
+# Secrets (set once, never in this file):
+#
+#   fly secrets set -a data-copilot-api \
+#     DEEPSEEK_API_KEY=... \
+#     SILICONFLOW_API_KEY=... \
+#     DATABASE_URL=postgres://... \
+#     LANGSMITH_API_KEY=... \
+#     CORS_ORIGINS=https://data-copilot-web.fly.dev \
+#     REDIS_URL=rediss://...
+
+app = "data-copilot-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  LOG_LEVEL = "INFO"
+  APP_ENV = "production"
+  # SSE relies on HTTP/1.1 keep-alive + ``X-Accel-Buffering: no``;
+  # uvicorn already honours both, no extra knobs needed.
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"     # scale to zero between demos
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  # Default response timeout is 60s. SSE turns can legitimately run
+  # 30-90s end-to-end on a slow DeepSeek call, so we bump it.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+# Liveness check uses the same endpoint Docker HEALTHCHECK does, so
+# behaviour matches between ``docker run`` and Fly.io.
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/health"
+
+# Single small machine: enough for demo traffic and free-tier-friendly.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -110,3 +110,135 @@ def test_module_singleton_can_be_reset() -> None:
     c2 = get_embedding_cache()
     assert c1 is not c2
     assert c2.get("x") is None
+
+
+# ---------------------------------------------------------------------------
+# Week 11: RedisCache backend (mocked redis client)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRedis:
+    """Minimal sync-redis stand-in. Enough surface for ``RedisCache``:
+    ``get`` / ``setex`` / ``incr`` / ``delete`` / ``scan_iter``.
+    Decoded-responses semantics so we mirror ``Redis.from_url(...,
+    decode_responses=True)``."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+        self._counters: dict[str, int] = {}
+
+    @classmethod
+    def from_url(cls, *_a, **_k) -> _FakeRedis:
+        return cls()
+
+    def get(self, key: str) -> str | None:
+        if key in self._counters:
+            return str(self._counters[key])
+        return self._store.get(key)
+
+    def setex(self, key: str, _ttl: int, value: str) -> None:
+        self._store[key] = value
+
+    def incr(self, key: str) -> int:
+        self._counters[key] = self._counters.get(key, 0) + 1
+        return self._counters[key]
+
+    def delete(self, *keys: str) -> None:
+        for k in keys:
+            self._store.pop(k, None)
+            self._counters.pop(k, None)
+
+    def scan_iter(self, *, match: str):
+        prefix = match.rstrip("*")
+        for k in list(self._store.keys()):
+            if k.startswith(prefix):
+                yield k
+
+
+@pytest.fixture()
+def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
+    """Patch ``redis.Redis`` so ``RedisCache(...)`` constructs against
+    the stand-in. Tests get the underlying ``_FakeRedis`` back so
+    they can assert on store state directly."""
+    fake = _FakeRedis()
+    import redis as redis_module
+
+    monkeypatch.setattr(redis_module, "Redis", _FakeRedis)
+    # The from_url classmethod is reused by ``RedisCache.__init__``;
+    # patching the *class* covers both ``Redis.from_url`` and
+    # ``Redis(...)`` callsites.
+    return fake
+
+
+def test_redis_cache_round_trip(fake_redis: _FakeRedis) -> None:
+    from copilot.cache import RedisCache
+
+    c = RedisCache("redis://test", max_size=10, ttl_seconds=60)
+    assert c.get("k") is None
+    c.set("k", [0.1, 0.2])
+    out = c.get("k")
+    assert out == [0.1, 0.2]
+
+
+def test_redis_cache_stats_track_hits_and_misses(fake_redis: _FakeRedis) -> None:
+    from copilot.cache import RedisCache
+
+    c = RedisCache("redis://test", max_size=10, ttl_seconds=60)
+    c.get("missing")
+    c.set("a", [1.0])
+    c.get("a")
+    c.get("a")
+    s = c.stats()
+    assert s.hits == 2
+    assert s.misses == 1
+    assert s.size == 1
+    # FIFO eviction isn't tracked by Redis TTL; always 0.
+    assert s.evictions == 0
+
+
+def test_redis_cache_handles_backend_errors_softly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Redis outage must never propagate an exception to the caller —
+    the cache contract is "best-effort"."""
+    from copilot.cache import RedisCache
+
+    class _Broken(_FakeRedis):
+        def get(self, key: str) -> str | None:
+            raise ConnectionError("redis down")
+
+        def setex(self, *_a, **_k) -> None:
+            raise ConnectionError("redis down")
+
+    import redis as redis_module
+
+    monkeypatch.setattr(redis_module, "Redis", _Broken)
+
+    c = RedisCache("redis://test", max_size=10, ttl_seconds=60)
+    # Neither call should raise; the cache simply behaves like a miss.
+    c.set("x", [1.0])
+    assert c.get("x") is None
+
+
+def test_redis_cache_rejects_invalid_construction() -> None:
+    from copilot.cache import RedisCache
+
+    with pytest.raises(ValueError):
+        RedisCache("", max_size=10, ttl_seconds=60)
+
+
+def test_get_embedding_cache_picks_redis_when_url_set(
+    fake_redis: _FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The factory function is the only place backend selection lives;
+    pin that ``REDIS_URL`` flips it deterministically."""
+    from copilot.config import get_settings
+
+    reset_embedding_cache()
+    monkeypatch.setattr(get_settings(), "redis_url", "redis://test")
+    cache = get_embedding_cache()
+    assert type(cache).__name__ == "RedisCache"
+    reset_embedding_cache()
+    monkeypatch.setattr(get_settings(), "redis_url", None)
+    cache2 = get_embedding_cache()
+    assert type(cache2).__name__ == "TTLCache"

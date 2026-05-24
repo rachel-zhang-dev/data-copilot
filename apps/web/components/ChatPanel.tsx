@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { postAsk, streamAsk } from "@/lib/api";
+import { streamAsk } from "@/lib/api";
 import type { ChatTurnViewModel, PhaseEvent, StreamEvent } from "@/lib/types";
 import { ChatInput } from "./ChatInput";
 import { ChatTurn } from "./ChatTurn";
@@ -92,42 +92,26 @@ export function ChatPanel() {
   );
 
   const resumeTurn = useCallback(
-    async (turnId: string, decision: "approve" | "reject") => {
+    (turnId: string, decision: "approve" | "reject") => {
       if (!conversationId) return;
-      setIsStreaming(true);
       // Clear the pending marker on the turn we're resuming so the
-      // approve/reject card hides while the request is in-flight.
+      // approve/reject card hides while the post-resume execution
+      // streams in.
       setTurns((prev) =>
         prev.map((t) => (t.id === turnId ? { ...t, pending: null } : t)),
       );
-      try {
-        const response = await postAsk({
-          conversation_id: conversationId,
-          resume: decision,
-        });
-        setTurns((prev) =>
-          prev.map((t) => (t.id === turnId ? { ...t, result: response } : t)),
-        );
-      } catch (err) {
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === turnId
-              ? {
-                  ...t,
-                  error: {
-                    type: "error",
-                    detail: (err as Error).message,
-                    errorType: (err as Error).name,
-                  },
-                }
-              : t,
-          ),
-        );
-      } finally {
-        setIsStreaming(false);
-      }
+      setIsStreaming(true);
+      // Week 11 audit fix: route resume through ``/ask/stream`` so the
+      // post-approve execution (execute_sql → summarize → visualize)
+      // surfaces phase events in the UI exactly like the initial turn.
+      // The previous non-streaming postAsk path produced a long pause
+      // followed by an abrupt result — accurate but a poor demo.
+      abortRef.current = streamAsk(
+        { conversation_id: conversationId, resume: decision },
+        (event) => handleEvent(turnId, event),
+      );
     },
-    [conversationId],
+    [conversationId, handleEvent],
   );
 
   return (
@@ -153,7 +137,7 @@ export function ChatPanel() {
               key={turn.id}
               turn={turn}
               isStreaming={isStreaming && turn === turns[turns.length - 1]}
-              onResume={(d) => void resumeTurn(turn.id, d)}
+              onResume={(d) => resumeTurn(turn.id, d)}
             />
           ))
         )}

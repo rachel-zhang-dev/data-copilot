@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
   // streaming Route Handler is done per-handler via response headers;
   // no global config needed.
   reactStrictMode: true,
+  // ``output: "standalone"`` produces a self-contained ``server.js``
+  // + minimal ``node_modules`` under ``.next/standalone/``. The
+  // production Dockerfile copies that out so the runtime image
+  // doesn't need pnpm or the full dev dependency tree.
+  output: "standalone",
 };
 
 export default nextConfig;

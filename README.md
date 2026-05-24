@@ -324,6 +324,47 @@ SSE-vs-WebSocket trade-off, why the Route-Handler proxy, and the
 `openapi-typescript`-driven type contract between front-end and
 back-end.
 
+### Deployment, observability, Redis cache (week 11)
+
+Both apps ship as multi-stage Docker images and deploy to Fly.io
+with one command each:
+
+```bash
+./scripts/deploy.sh api          # backend image → data-copilot-api.fly.dev
+./scripts/deploy.sh web          # frontend image → data-copilot-web.fly.dev
+./scripts/deploy.sh all          # both, in order
+./scripts/deploy.sh smoke        # post-deploy health probes
+```
+
+Secrets (`DEEPSEEK_API_KEY`, `SILICONFLOW_API_KEY`, `DATABASE_URL`,
+`CORS_ORIGINS`, optional `REDIS_URL`) are managed via
+`fly secrets set -a <app> ...`; never committed.
+
+Three observability surfaces ship in this week:
+
+| URL                                | Purpose                                                         |
+|------------------------------------|-----------------------------------------------------------------|
+| `GET /health`                      | Cheap liveness probe                                            |
+| `GET /metrics`                     | Prometheus counters + histograms (request rate, latency, …)     |
+| `GET /admin/stats`                 | Human dashboard: cache hit-rate, uptime, non-secret settings    |
+| `GET /api/health` (front-end)      | Wraps the upstream probe so the FE stays "alive" if API is asleep |
+
+The embedding cache (week 9) gains a Redis backend: set `REDIS_URL`
+and `get_embedding_cache()` swaps from `TTLCache` to `RedisCache`
+behind the same `EmbeddingCacheBackend` protocol — every consumer
+of the cache (the retriever, the cost reducer, the admin endpoint)
+stays unchanged. The fallback is graceful: a Redis outage degrades
+to cache-miss behaviour, never to user-facing errors.
+
+Week 11 also folds in the three audit items from Week 10
+(`resume`-via-SSE so the post-approve UX streams, env-driven CORS,
+SSE heartbeats so reverse proxies don't drop idle connections) plus
+two from Week 9 (`last_was_cache_hit` migrates to `ContextVar`,
+unknown-model cost estimates log a one-shot warning). See
+[ADR 0012](docs/decisions/0012-deployment-and-observability.md)
+for the full rationale on Fly.io vs alternatives, Prometheus vs
+Sentry, and the Redis-migration design.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -340,7 +381,7 @@ back-end.
 | 8 ✅ | Visualisation generation + insight summaries |
 | 9 ✅ | Caching layer · cost report · retries with exponential backoff |
 | 10 ✅ | Next.js front-end with streaming responses |
-| 11 | Docker production image · Fly.io deploy · monitoring · swap embedding cache to Redis if scaling out |
+| 11 ✅ | Docker production image · Fly.io deploy · monitoring · Redis cache backend |
 | 12 | Polish, demo video, blog series, simplify onboarding |
 
 ## Project layout

@@ -1,0 +1,53 @@
+# Repo-wide .dockerignore. Both image builds run from the repo root
+# (see deploy script) so this file covers both contexts.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python build / cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+.tox
+.venv
+*.egg-info
+
+# Node / Next.js
+**/node_modules
+apps/web/.next
+apps/web/out
+apps/web/.turbo
+apps/web/coverage
+
+# IDE / OS junk
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# Local-only files
+.env
+.env.*
+!.env.example
+
+# Big things the runtime image never needs
+data/
+notebooks/
+docs/
+docs/eval/*.md
+scripts/
+*.md
+!apps/api/README.md
+!apps/web/README.md
+LICENSE
+
+# Test fixtures are not needed at runtime
+apps/api/tests
+apps/web/__tests__

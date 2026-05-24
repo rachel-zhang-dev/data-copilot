@@ -205,6 +205,40 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     app_env: str = "development"
+    cors_origins: str = Field(
+        default="http://localhost:3000",
+        description=(
+            "Comma-separated origins allowed by the FastAPI CORS middleware. "
+            "Defaults to the local Next.js dev server; set this to the "
+            "production Fly.io / Vercel front-end origin at deploy time."
+        ),
+    )
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parsed, whitespace-trimmed origin list. ``["*"]`` permits any
+        origin and is intended only for local development."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    # ---------- Deployment / observability (week 11) ----------
+    redis_url: str | None = Field(
+        default=None,
+        description=(
+            "When set, the embedding cache routes through Redis instead of "
+            "the in-memory ``TTLCache``. Format: "
+            "``redis://[:password@]host:port/db`` (or ``rediss://`` for TLS). "
+            "Unset (the default) keeps the process-local cache that ships "
+            "since week 9."
+        ),
+    )
+    metrics_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether to expose Prometheus metrics at ``GET /metrics``. "
+            "Off in CI / unit tests to keep the registry clean; on in "
+            "production so Fly.io and Grafana Cloud can scrape."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

@@ -123,10 +123,33 @@ _FALLBACK_PRICE: dict[str, float] = {"in": 0.001, "out": 0.001}
 deliberately ~10x more expensive than DeepSeek so the resulting
 estimate is a safe upper bound."""
 
+# Models we have already warned about. Rate-limits the log entry to
+# one line per process per unknown model so a misconfigured env var
+# does not flood the operator's terminal.
+_WARNED_MODELS: set[str] = set()
+
 
 def estimate_usd(model: str, tokens_in: int, tokens_out: int) -> float:
-    """Project a token count onto USD using ``UNIT_PRICES_USD_PER_1K``."""
-    price = UNIT_PRICES_USD_PER_1K.get(model, _FALLBACK_PRICE)
+    """Project a token count onto USD using ``UNIT_PRICES_USD_PER_1K``.
+
+    When ``model`` is missing from the price table we log a single
+    ``WARNING`` per process (week 11) so operators notice silently
+    overestimated cost figures. The fallback price is conservatively
+    ~10x DeepSeek so the dollar figure errs on the safe side.
+    """
+    price = UNIT_PRICES_USD_PER_1K.get(model)
+    if price is None:
+        if model not in _WARNED_MODELS:
+            log.warning(
+                "cost.estimate_usd: model %r not in UNIT_PRICES_USD_PER_1K; "
+                "using conservative fallback ($%.4f / 1K in, $%.4f / 1K out). "
+                "Add to copilot.cost or expect inflated dollar estimates.",
+                model,
+                _FALLBACK_PRICE["in"],
+                _FALLBACK_PRICE["out"],
+            )
+            _WARNED_MODELS.add(model)
+        price = _FALLBACK_PRICE
     return (tokens_in / 1000.0) * price["in"] + (tokens_out / 1000.0) * price["out"]
 
 
