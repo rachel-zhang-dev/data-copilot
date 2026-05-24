@@ -287,6 +287,43 @@ depth. See [ADR 0010](docs/decisions/0010-caching-and-resilience.md)
 for why only embeddings get cached, why in-memory before Redis,
 and the per-token USD pricing table.
 
+### Streaming Next.js front-end (week 10)
+
+The full agent surface — phases, charts, structured insight, HITL
+pause, cost — now ships as a Next.js 15 app at `apps/web/`. The
+backend exposes `POST /ask/stream` (Server-Sent Events); the
+front-end consumes it through a Route-Handler proxy so the browser
+talks to a single origin.
+
+```bash
+# First time only
+cd apps/web && pnpm install
+
+# Run both processes (two terminals)
+./scripts/dev.sh api          # FastAPI on :8000
+./scripts/dev.sh web          # Next.js on :3000
+
+# Optional: regenerate TS types from the live OpenAPI document
+cd apps/web && pnpm gen:types
+```
+
+SSE event taxonomy:
+
+| event                    | when                                    | data                                  |
+|--------------------------|-----------------------------------------|---------------------------------------|
+| `phase`                  | once per node activation                | `{node, diff, internal}`              |
+| `pending_confirmation`   | HITL gate paused the graph              | `{conversation_id, pending_risk}`     |
+| `done`                   | turn finished                           | full `AskResponse`                    |
+| `error`                  | server-side exception inside the stream | `{detail, type}`                      |
+
+The single Client Component (`ChatPanel`) owns the chat state — no
+Zustand, no Redux. Vega-Lite charts are lazy-imported per turn so
+the initial bundle stays small. See
+[ADR 0011](docs/decisions/0011-frontend-and-streaming.md) for the
+SSE-vs-WebSocket trade-off, why the Route-Handler proxy, and the
+`openapi-typescript`-driven type contract between front-end and
+back-end.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -302,7 +339,7 @@ and the per-token USD pricing table.
 | 7 ✅ | Human-in-the-loop confirmation for expensive queries |
 | 8 ✅ | Visualisation generation + insight summaries |
 | 9 ✅ | Caching layer · cost report · retries with exponential backoff |
-| 10 | Next.js front-end with streaming responses |
+| 10 ✅ | Next.js front-end with streaming responses |
 | 11 | Docker production image · Fly.io deploy · monitoring · swap embedding cache to Redis if scaling out |
 | 12 | Polish, demo video, blog series, simplify onboarding |
 
@@ -314,11 +351,16 @@ data-copilot/
 │   ├── api/                # FastAPI + LangGraph backend
 │   │   ├── copilot/        # importable Python package
 │   │   │   ├── agent/      # LangGraph nodes, state, graph builder
+│   │   │   ├── cache.py    # in-memory TTL cache (week 9)
+│   │   │   ├── cost.py     # CostBreakdown reducer + USD pricing (week 9)
 │   │   │   ├── config.py
 │   │   │   ├── llm.py
-│   │   │   └── main.py     # FastAPI app
+│   │   │   └── main.py     # FastAPI app (with /ask/stream as of week 10)
 │   │   └── tests/
-│   └── web/                # Next.js UI (added in week 10)
+│   └── web/                # Next.js 15 + Tailwind v4 (week 10)
+│       ├── app/            # App Router pages + Route Handlers
+│       ├── components/     # Client components (ChatPanel et al)
+│       ├── lib/            # SSE client + typed API contract
 ├── data/
 │   └── seed/               # SQL fixtures (Northwind / TPC-H subset)
 ├── docs/

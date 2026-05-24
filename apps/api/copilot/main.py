@@ -19,6 +19,7 @@ Reading guide
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -28,6 +29,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
@@ -96,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.9.0",
+    version="0.10.0",
     lifespan=lifespan,
 )
 
@@ -243,6 +245,66 @@ def _first_interrupt_payload(result: dict[str, Any]) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _build_ask_response(
+    result: dict[str, Any],
+    *,
+    conversation_id: str,
+    debug: bool,
+) -> AskResponse:
+    """Project a LangGraph ``ainvoke`` (or fully-consumed ``astream``)
+    result into the public ``AskResponse`` shape.
+
+    Centralised here so the streaming endpoint and the legacy
+    ``/ask`` endpoint emit identical ``done`` payloads; any future
+    field added to the response only has to be wired in one place.
+    """
+    pending = _first_interrupt_payload(result)
+    failures = result.get("attempts") or []
+    turn_idx = result.get("turn_index") or 1
+    this_turn_failures = [f for f in failures if f.get("turn_idx", 0) == turn_idx]
+    if not result.get("sql"):
+        attempts_count = 0
+    elif result.get("error"):
+        attempts_count = len(this_turn_failures)
+    else:
+        attempts_count = len(this_turn_failures) + 1
+    cost = result.get("cost")
+
+    if pending is not None:
+        return AskResponse(
+            answer="",
+            conversation_id=conversation_id,
+            turn_index=turn_idx,
+            sql=result.get("sql"),
+            rows=None,
+            row_count=None,
+            error=None,
+            attempts=attempts_count,
+            attempts_history=list(this_turn_failures) if debug else None,
+            status="pending_confirmation",
+            pending_risk=pending,
+            cost=cost,
+        )
+
+    return AskResponse(
+        answer=result.get("answer", ""),
+        conversation_id=conversation_id,
+        turn_index=turn_idx,
+        sql=result.get("sql"),
+        rows=result.get("sql_result"),
+        row_count=result.get("row_count"),
+        error=result.get("error"),
+        attempts=attempts_count,
+        attempts_history=list(this_turn_failures) if debug else None,
+        status="ok",
+        pending_risk=None,
+        insight=result.get("insight"),
+        chart_kind=result.get("chart_kind"),
+        chart_spec=result.get("chart_spec"),
+        cost=cost,
+    )
+
+
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     """Run the agent on a single user question, or resume a paused turn.
@@ -292,60 +354,150 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
         else:
             result = await graph.ainvoke({"question": req.question}, config=config)
 
-    pending = _first_interrupt_payload(result)
-    failures = result.get("attempts") or []
-    turn_idx = result.get("turn_index") or 1
-    # Count failures recorded during THIS turn only.
-    this_turn_failures = [f for f in failures if f.get("turn_idx", 0) == turn_idx]
-    # Count total SQL-generation calls in this turn:
-    #   * chitchat path never generated SQL                     -> 0
-    #   * budget exhausted (error set, all attempts failed)     -> len(failures)
-    #   * happy path / self-healed (final attempt succeeded)    -> len(failures) + 1
-    # validate_sql_node deliberately leaves ``state.sql`` set on failure so
-    # the retry prompt can reference it, which means ``result.sql`` alone
-    # cannot disambiguate success from terminal failure — we have to check
-    # ``error`` too.
-    if not result.get("sql"):
-        attempts_count = 0
-    elif result.get("error"):
-        attempts_count = len(this_turn_failures)
-    else:
-        attempts_count = len(this_turn_failures) + 1
+    return _build_ask_response(result, conversation_id=conversation_id, debug=debug)
 
-    cost = result.get("cost")
-    if pending is not None:
-        # The graph is paused at ``await_confirmation``. We surface the
-        # full diagnostic payload to the caller and an empty answer —
-        # the user has not actually been answered yet.
-        return AskResponse(
-            answer="",
-            conversation_id=conversation_id,
-            turn_index=turn_idx,
-            sql=result.get("sql"),
-            rows=None,
-            row_count=None,
-            error=None,
-            attempts=attempts_count,
-            attempts_history=list(this_turn_failures) if debug else None,
-            status="pending_confirmation",
-            pending_risk=pending,
-            cost=cost,
+
+# ---------------------------------------------------------------------------
+# Streaming endpoint (week 10)
+# ---------------------------------------------------------------------------
+
+
+# SSE field separator — kept as a module constant so a future tweak to the
+# heartbeat shape only touches one place.
+_SSE_SEP = "\n\n"
+
+
+def _sse_event(event: str, data: Any) -> str:
+    """Format one SSE event. ``data`` is JSON-serialised so the client's
+    EventSource always sees a single ``data:`` line per event — no need
+    to worry about newlines in nested strings."""
+    payload = json.dumps(data, default=str, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}{_SSE_SEP}"
+
+
+# Node names that are pure plumbing and add visual noise without telling
+# the user anything new. Streamed but tagged "internal" so the front-end
+# can hide them by default.
+_INTERNAL_NODES = frozenset({"reset_per_turn", "append_to_dialogue", "compact_history"})
+
+
+def _phase_payload(node: str, diff: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a node's full state diff into a phase payload that's safe
+    to ship over the wire.
+
+    Filters out internal bookkeeping fields (``messages``, big blobs
+    like ``relevant_schema``) so the SSE stream stays small and the
+    client doesn't have to know about LangGraph internals.
+    """
+    keep = {"intent", "sql", "row_count", "error", "answer", "chart_kind",
+            "risk_decision", "turn_index"}
+    safe_diff: dict[str, Any] = {k: v for k, v in diff.items() if k in keep}
+    return {
+        "node": node,
+        "diff": safe_diff,
+        "internal": node in _INTERNAL_NODES,
+    }
+
+
+async def _stream_ask(
+    graph: Any,
+    payload: Any,
+    config: dict[str, Any],
+    conversation_id: str,
+    *,
+    debug: bool,
+) -> AsyncIterator[str]:
+    """Async generator that yields SSE events for one turn.
+
+    Three event types:
+      * ``phase``                — one per node activation.
+      * ``pending_confirmation`` — graph paused at the HITL gate.
+      * ``done``                 — full ``AskResponse`` JSON.
+
+    On any unhandled exception we emit ``error`` and end the stream
+    so the client gets a deterministic signal instead of a half-open
+    socket.
+    """
+    interrupted = False
+    try:
+        async with conversation_lock(conversation_id):
+            async for update in graph.astream(payload, config=config, stream_mode="updates"):
+                # LangGraph 1.2 surfaces interrupts inline as a chunk
+                # with key ``__interrupt__`` whose value is a tuple of
+                # ``Interrupt`` objects.
+                if "__interrupt__" in update:
+                    interrupts = update["__interrupt__"]
+                    first = interrupts[0] if interrupts else None
+                    risk = getattr(first, "value", None) if first is not None else None
+                    yield _sse_event(
+                        "pending_confirmation",
+                        {
+                            "conversation_id": conversation_id,
+                            "pending_risk": risk,
+                        },
+                    )
+                    interrupted = True
+                    break
+
+                for node, diff in update.items():
+                    yield _sse_event("phase", _phase_payload(node, diff))
+
+            if not interrupted:
+                # Fetch the final cumulative state and project to AskResponse.
+                snapshot = await graph.aget_state(config)
+                final = dict(snapshot.values)
+                response = _build_ask_response(
+                    final, conversation_id=conversation_id, debug=debug
+                )
+                yield _sse_event("done", response.model_dump())
+    except Exception as exc:
+        log.exception("/ask/stream failed: %s", exc)
+        yield _sse_event(
+            "error",
+            {"detail": str(exc), "type": type(exc).__name__},
         )
 
-    return AskResponse(
-        answer=result.get("answer", ""),
-        conversation_id=conversation_id,
-        turn_index=turn_idx,
-        sql=result.get("sql"),
-        rows=result.get("sql_result"),
-        row_count=result.get("row_count"),
-        error=result.get("error"),
-        attempts=attempts_count,
-        attempts_history=list(this_turn_failures) if debug else None,
-        status="ok",
-        pending_risk=None,
-        insight=result.get("insight"),
-        chart_kind=result.get("chart_kind"),
-        chart_spec=result.get("chart_spec"),
-        cost=cost,
+
+@app.post("/ask/stream")
+async def ask_stream(req: AskRequest, debug: bool = False) -> StreamingResponse:
+    """Stream the agent's per-node progress over Server-Sent Events.
+
+    Wire format and event taxonomy are documented in ADR 0011. The
+    request body matches ``/ask``; on HITL pause the stream ends with
+    a ``pending_confirmation`` event and the client is expected to
+    call ``/ask`` (non-streaming) with ``resume="approve"|"reject"``
+    to continue.
+
+    Note on caching headers: we set ``Cache-Control: no-cache`` and
+    ``X-Accel-Buffering: no`` so reverse proxies (Nginx, Cloudflare)
+    do not buffer the response — without this, SSE would only flush
+    when the connection closed, defeating the point of streaming.
+    """
+    graph = app.state.graph
+    conversation_id = req.conversation_id or str(uuid.uuid4())
+    config: dict[str, Any] = {"configurable": {"thread_id": conversation_id}}
+
+    if req.resume is not None:
+        snapshot = await graph.aget_state(config)
+        if not getattr(snapshot, "interrupts", None):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "no pending confirmation on this conversation; pass a "
+                    "question instead of resume to start a new turn"
+                ),
+            )
+        payload: Any = Command(resume=req.resume)
+    else:
+        payload = {"question": req.question}
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(
+        _stream_ask(graph, payload, config, conversation_id, debug=debug),
+        media_type="text/event-stream",
+        headers=headers,
     )

@@ -6,6 +6,7 @@
 #                                        schema index if it is empty)
 #   ./scripts/dev.sh down              # stop postgres
 #   ./scripts/dev.sh api               # run the FastAPI server with reload
+#   ./scripts/dev.sh web               # run the Next.js dev server on :3000 (week 10)
 #   ./scripts/dev.sh test              # unit tests (no integration)
 #   ./scripts/dev.sh test-integration  # integration tests (real APIs + DB)
 #   ./scripts/dev.sh index [--force]   # (re)build schema_embeddings
@@ -55,6 +56,16 @@ case "$cmd" in
   api)
     cd apps/api
     uv run uvicorn copilot.main:app --reload --host 0.0.0.0 --port "${API_PORT:-8000}"
+    ;;
+  web)
+    # Next.js dev server. Run ``pnpm install`` the first time; the
+    # script aborts loud if it hasn't been done yet.
+    cd apps/web
+    if [ ! -d node_modules ]; then
+      echo "node_modules missing; run: cd apps/web && pnpm install"
+      exit 1
+    fi
+    pnpm dev
     ;;
   test)
     cd apps/api
