@@ -42,10 +42,14 @@ Intent = Literal["data", "chitchat"]
 ``route_after_classify`` to branch the graph."""
 
 
-ErrorClass = Literal["unsafe_sql", "execution_failed", "fatal"]
+ErrorClass = Literal["unsafe_sql", "execution_failed", "fatal", "user_rejected"]
 """Categorisation of a node failure. Used by ``can_retry`` to decide
 whether the agent loops back to ``generate_sql`` or terminates with a
-user-facing error."""
+user-facing error.
+
+``user_rejected`` (week 7) is the verdict when the user declined the
+human-in-the-loop confirmation prompt. It is terminal — there is
+nothing the agent can retry against a user saying "no"."""
 
 
 class Attempt(TypedDict):
@@ -164,6 +168,19 @@ class AgentState(TypedDict, total=False):
     retry_count: int
     """Legacy field from week 2; superseded by ``attempts``. Kept for
     backwards compatibility with any external observer that read it."""
+
+    # ---------- Human-in-the-loop (turn-local; reset per turn) ----------
+    pending_risk: dict[str, Any]
+    """Diagnostic payload populated by ``check_risk_node`` when the
+    planner cost crosses ``risk_explain_cost_threshold``. Shape:
+    ``{"sql": str, "total_cost": float, "threshold": float, "reason": str}``.
+    Surfaced to the caller while the graph is paused at
+    ``await_confirmation``; cleared at the next ``reset_per_turn``."""
+
+    risk_decision: Literal["approved", "rejected"]
+    """Set by ``await_confirmation_node`` from the value the caller
+    passed to ``Command(resume=...)``. Used by ``route_after_confirmation``
+    to fan out to ``execute_sql`` or ``finalize_error``."""
 
     # ---------- Outputs (read by the caller) ----------
     answer: str

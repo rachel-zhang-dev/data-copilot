@@ -59,6 +59,7 @@ def test_real_cases_yaml_loads_and_has_all_categories() -> None:
         "chitchat",
         "destructive",
         "ambiguous",
+        "expensive",
     } <= cats
 
 

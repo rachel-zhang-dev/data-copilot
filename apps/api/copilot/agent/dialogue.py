@@ -60,6 +60,10 @@ def reset_per_turn_node(state: AgentState) -> dict[str, Any]:
         "row_count": None,
         "error": None,
         "answer": None,
+        # Week 7: clear the HITL pause + decision so a follow-up turn
+        # never inherits "yes I already approved" from a previous turn.
+        "pending_risk": None,
+        "risk_decision": None,
         "turn_index": current_turn_index(state),
     }
 

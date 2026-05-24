@@ -24,11 +24,12 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from langgraph.types import Command
+from pydantic import BaseModel, model_validator
 
 from copilot.agent import build_graph
 from copilot.checkpointer import (
@@ -95,7 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.5.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
@@ -119,20 +120,57 @@ app.add_middleware(
 
 
 class AskRequest(BaseModel):
-    question: str
+    """Input envelope for ``POST /ask``.
+
+    A request is one of two shapes:
+
+    * **Fresh turn**: ``question`` populated, ``resume`` omitted. Starts
+      a new conversation (when ``conversation_id`` is also omitted) or
+      adds a follow-up to an existing one.
+    * **Resume turn** (week 7): ``resume`` populated to ``"approve"``
+      or ``"reject"``, ``conversation_id`` required, ``question``
+      omitted. Used to answer a pending human-in-the-loop confirmation.
+
+    The model validator below rejects any other combination so the
+    server never has to guess intent from a half-filled body.
+    """
+
+    question: str | None = None
     # When omitted, the server allocates a fresh UUID and the call
     # starts a new conversation. Pass it back on subsequent calls to
     # continue the same thread.
     conversation_id: str | None = None
+    # Week 7 — present only on the second leg of a HITL pause.
+    resume: Literal["approve", "reject"] | None = None
+
+    @model_validator(mode="after")
+    def _check_question_or_resume(self) -> AskRequest:
+        if self.resume is None and not (self.question and self.question.strip()):
+            raise ValueError("question is required unless resume is provided")
+        if self.resume is not None:
+            if self.question is not None:
+                raise ValueError("question must be omitted when resume is provided")
+            if not self.conversation_id:
+                raise ValueError("conversation_id is required to resume a paused thread")
+        return self
 
 
 class AskResponse(BaseModel):
     """Response envelope for ``POST /ask``.
 
-    Only ``answer`` is guaranteed populated. The other fields are
-    introspection data — useful for debugging the agent, for the future
+    Only ``answer`` is guaranteed populated (and even that is empty
+    when the agent is paused awaiting confirmation). The other fields
+    are introspection data — useful for debugging the agent, for the
     Next.js UI, and for the evaluation harness. They are ``None`` when
     the question routes through the chitchat branch.
+
+    ``status`` distinguishes the three legitimate outcomes:
+
+    * ``"ok"``                    — turn finished; ``answer`` is final.
+    * ``"pending_confirmation"``  — graph paused at the HITL gate (week 7);
+                                     ``pending_risk`` is populated and the
+                                     caller is expected to call ``/ask``
+                                     again with ``resume="approve"|"reject"``.
     """
 
     answer: str
@@ -151,6 +189,9 @@ class AskResponse(BaseModel):
     # Per-attempt history (sql + error + class). Off by default to keep
     # the response small; populate when ``?debug=true`` is set.
     attempts_history: list[dict[str, Any]] | None = None
+    # Week 7 — HITL surface.
+    status: Literal["ok", "pending_confirmation"] = "ok"
+    pending_risk: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +209,26 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "version": app.version}
 
 
+def _first_interrupt_payload(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract the interrupt payload from a paused ``ainvoke`` result.
+
+    LangGraph surfaces active interrupts via the ``__interrupt__`` key
+    on the returned state — a list of ``Interrupt(value=..., id=...)``.
+    We return the first one's ``value`` (only one HITL gate exists
+    today; the list-of-one shape leaves room for parallel branches
+    to introduce more later).
+    """
+    interrupts = result.get("__interrupt__")
+    if not interrupts:
+        return None
+    first = interrupts[0]
+    value = getattr(first, "value", None)
+    return value if isinstance(value, dict) else None
+
+
 @app.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
-    """Run the agent on a single user question.
+    """Run the agent on a single user question, or resume a paused turn.
 
     Multi-turn dialogue is opt-in via ``conversation_id``. Same id =
     continuation of the same thread (history loaded from Postgres);
@@ -179,13 +237,32 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     Set ``?debug=true`` to also receive ``attempts_history`` — the full
     list of failed (sql, error) pairs the self-healing loop walked
     through.
+
+    Week 7: if the response carries ``status="pending_confirmation"``,
+    the agent has paused at a HITL gate. Call ``/ask`` again with the
+    same ``conversation_id`` and ``resume="approve"|"reject"`` to
+    continue.
     """
     graph = app.state.graph
     conversation_id = req.conversation_id or str(uuid.uuid4())
 
     # LangGraph keys persistence on ``thread_id``; we treat
     # conversation_id and thread_id as synonyms.
-    config = {"configurable": {"thread_id": conversation_id}}
+    config: dict[str, Any] = {"configurable": {"thread_id": conversation_id}}
+
+    # Resume requests must target a thread that is actually paused.
+    # We probe the checkpointer up front so a stray resume call gets a
+    # crisp 400 instead of a confusing no-op run.
+    if req.resume is not None:
+        snapshot = await graph.aget_state(config)
+        if not getattr(snapshot, "interrupts", None):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "no pending confirmation on this conversation; pass a "
+                    "question instead of resume to start a new turn"
+                ),
+            )
 
     # Serialise concurrent writes to the same conversation_id. Without
     # this guard, two near-simultaneous /ask calls on the same thread
@@ -193,8 +270,12 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     # overwrites the earlier turn's diff. Different conversation_ids
     # use different lock keys and stay fully parallel.
     async with conversation_lock(conversation_id):
-        result = await graph.ainvoke({"question": req.question}, config=config)
+        if req.resume is not None:
+            result = await graph.ainvoke(Command(resume=req.resume), config=config)
+        else:
+            result = await graph.ainvoke({"question": req.question}, config=config)
 
+    pending = _first_interrupt_payload(result)
     failures = result.get("attempts") or []
     turn_idx = result.get("turn_index") or 1
     # Count failures recorded during THIS turn only.
@@ -214,6 +295,24 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     else:
         attempts_count = len(this_turn_failures) + 1
 
+    if pending is not None:
+        # The graph is paused at ``await_confirmation``. We surface the
+        # full diagnostic payload to the caller and an empty answer —
+        # the user has not actually been answered yet.
+        return AskResponse(
+            answer="",
+            conversation_id=conversation_id,
+            turn_index=turn_idx,
+            sql=result.get("sql"),
+            rows=None,
+            row_count=None,
+            error=None,
+            attempts=attempts_count,
+            attempts_history=list(this_turn_failures) if debug else None,
+            status="pending_confirmation",
+            pending_risk=pending,
+        )
+
     return AskResponse(
         answer=result.get("answer", ""),
         conversation_id=conversation_id,
@@ -224,4 +323,6 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
         error=result.get("error"),
         attempts=attempts_count,
         attempts_history=list(this_turn_failures) if debug else None,
+        status="ok",
+        pending_risk=None,
     )

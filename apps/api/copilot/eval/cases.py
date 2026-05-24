@@ -61,9 +61,15 @@ Category = Literal[
     "chitchat",
     "destructive",
     "ambiguous",
+    "expensive",
 ]
-"""The eight buckets we slice metrics by. Adding a new bucket means
-both updating this Literal AND adding cases to cases.yaml."""
+"""The nine buckets we slice metrics by. Adding a new bucket means
+both updating this Literal AND adding cases to cases.yaml.
+
+``expensive`` (week 7) covers questions that should produce SQL with a
+Postgres planner cost above the HITL threshold. The eval auto-approves
+the resulting pause so the rest of the pipeline can be graded; the
+pause behaviour itself is unit-tested in ``tests/test_risk.py``."""
 
 _CATEGORIES: set[str] = set(get_args(Category))
 

@@ -392,6 +392,15 @@ def finalize_error_node(state: AgentState) -> dict[str, Any]:
             f"({reason}). The schema may have changed, or the question may "
             "need to be more specific."
         )
+    elif err.startswith("user_rejected:"):
+        # Week 7: terminal verdict when the user declines the
+        # confirmation prompt. No retry, no apology — they made an
+        # informed choice and we honour it.
+        msg = (
+            "Okay, I did not run that query. If you would like, ask it "
+            "again with a narrower filter (e.g. add a WHERE clause or a "
+            "date range) and I can try once more."
+        )
     else:
         msg = f"Sorry, I could not answer that{suffix}. Reason: {err}"
     return {"answer": msg}

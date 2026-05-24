@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from copilot.agent import build_graph, feature_flags
 from copilot.agent.state import Turn
@@ -174,6 +175,19 @@ async def _invoke_case(
             state = await asyncio.wait_for(invocation, timeout=timeout_s)
         else:
             state = await invocation
+        # Week 7: if the agent paused at the HITL gate, auto-approve so
+        # the rest of the pipeline runs and the case is gradable. The
+        # pause behaviour itself is verified by ``tests/test_risk.py``;
+        # the eval set's job is to grade the *output*, not the gating
+        # decision. Re-applies the same per-case wall budget so a slow
+        # resume cannot evade the timeout.
+        while state.get("__interrupt__"):
+            log.info("case %s paused at HITL gate; auto-approving", case.id)
+            resume_call = graph.ainvoke(Command(resume="approve"), config=config)
+            if timeout_s is not None:
+                state = await asyncio.wait_for(resume_call, timeout=timeout_s)
+            else:
+                state = await resume_call
     except TimeoutError:
         elapsed = (time.perf_counter() - t0) * 1000
         log.warning("case %s timed out after %.1fs", case.id, timeout_s)

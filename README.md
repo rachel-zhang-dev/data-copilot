@@ -171,6 +171,43 @@ See [ADR 0007](docs/decisions/0007-eval-methodology.md) for the
 methodology and trade-offs (e.g. why deterministic graders, why not
 RAGAS).
 
+### Human-in-the-loop confirmation (week 7)
+
+Since week 7, when the agent generates SQL whose Postgres planner
+cost exceeds a threshold (default `1000.0`, tunable via
+`RISK_EXPLAIN_COST_THRESHOLD`), the graph pauses **before** executing
+and surfaces a `pending_confirmation` response. The caller answers
+with `resume="approve"` or `resume="reject"` on the same
+`conversation_id`, and the graph picks up at the interrupt point via
+LangGraph's `Command(resume=...)` primitive — persisted through the
+same `PostgresSaver` that powers multi-turn dialogue, so the pause
+survives process restarts.
+
+```bash
+# 1) Ask an expensive question — the agent pauses
+./scripts/dev.sh ask "Show me every order with every product and customer detail"
+# => --- PENDING CONFIRMATION ---
+#    reason:     Postgres planner estimated total cost 1234.5 ...
+#    total_cost: 1234.5
+#    threshold:  1000.0
+#    --- SQL ---
+#    SELECT ... FROM orders JOIN products ... LIMIT 100
+#    conversation_id: abc-123
+
+# 2a) Approve — the agent runs the SQL and answers
+./scripts/dev.sh ask --cid abc-123 --resume approve
+
+# 2b) Or reject — the turn finalises with "I did not run that query"
+./scripts/dev.sh ask --cid abc-123 --resume reject
+```
+
+The same pause/resume mechanic is wired into the HTTP API via the
+optional `resume` field on `POST /ask`. See
+[ADR 0008](docs/decisions/0008-human-in-the-loop.md) for why the
+planner cost (vs row-count heuristics or `EXPLAIN ANALYZE`), why
+`interrupt()` over external queues, and the per-class threshold
+tuning notes.
+
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ## Roadmap
@@ -183,7 +220,7 @@ RAGAS).
 | 4 ✅ | Refactor to full LangGraph state machine with self-healing |
 | 5 ✅ | Multi-turn dialogue + chat history compaction |
 | 6 ✅ | Evaluation set + 3 A/B experiments |
-| 7 | Human-in-the-loop confirmation for destructive / expensive queries |
+| 7 ✅ | Human-in-the-loop confirmation for expensive queries |
 | 8 | Visualisation generation + insight summaries |
 | 9 | Caching layer · cost report · retries with exponential backoff |
 | 10 | Next.js front-end with streaming responses |

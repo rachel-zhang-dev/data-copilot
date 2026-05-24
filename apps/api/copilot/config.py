@@ -123,6 +123,29 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------- Human-in-the-loop (week 7) ----------
+    risk_explain_cost_threshold: float = Field(
+        default=1_000.0,
+        ge=0.0,
+        description=(
+            "Postgres planner ``Total Cost`` above which the agent pauses "
+            "for a human approve / reject decision before executing the "
+            "SQL. Calibrated for Northwind; raise to ~10_000 on a real "
+            "warehouse. Set to 0 to disable the risk check entirely (every "
+            "validated query runs immediately)."
+        ),
+    )
+    risk_explain_timeout_ms: int = Field(
+        default=500,
+        ge=10,
+        le=60_000,
+        description=(
+            "Statement timeout applied to the EXPLAIN call itself. Defends "
+            "against pathological queries that hang the planner. EXPLAIN "
+            "does not execute the SQL, so this can stay tight."
+        ),
+    )
+
     # ---------- API ----------
     api_host: str = "0.0.0.0"
     api_port: int = 8000

@@ -1,25 +1,25 @@
-"""LangGraph wiring — the week-5 multi-turn text-to-SQL agent.
+"""LangGraph wiring — the week-7 HITL-capable text-to-SQL agent.
 
-Layered on top of week 4's self-healing graph, week 5 adds:
+Layered on top of week 5's multi-turn graph, week 7 adds the
+human-in-the-loop confirmation pair:
 
-* ``reset_per_turn``       — first node every invocation, clears
-                              turn-local fields so a follow-up is not
-                              poisoned by the previous turn's state.
-* ``append_to_dialogue``   — last node before END for every terminal
-                              path (small_talk / summarize_result /
-                              finalize_error). Records the turn into
-                              the user-facing dialogue list.
-* ``compact_history``      — runs after append_to_dialogue. When the
-                              dialogue exceeds ``compaction_threshold_tokens``
-                              it summarises older turns into one synthetic
-                              entry; otherwise it is a no-op.
+* ``check_risk``           — runs after ``validate_sql``. Calls Postgres
+                              ``EXPLAIN`` on the validated SQL and writes
+                              a ``pending_risk`` payload to state when
+                              the planner cost exceeds the configured
+                              threshold.
+* ``await_confirmation``   — pauses the graph via LangGraph's
+                              ``interrupt()`` primitive. Resumes on the
+                              caller's next ``Command(resume=...)`` and
+                              writes ``risk_decision`` (approved /
+                              rejected) to state.
 
 Persistence is wired through ``compile(checkpointer=...)``: each
 ``ainvoke`` is keyed by ``thread_id == conversation_id`` so the
 agent automatically loads the prior state and saves the diff after
-every node.
+every node, including across an interrupt-resume gap.
 
-Graph (week 5)::
+Graph (week 7)::
 
          reset_per_turn
                 |
@@ -33,6 +33,13 @@ Graph (week 5)::
             |             |            |retry
             |        validate_sql -----+
             |             |            |
+            |        check_risk        |
+            |          /     \\        |
+            |   await_confirm  \\      |
+            |       |  \\       \\     |
+            |   approved rejected      |
+            |       |       \\         |
+            |        \\       \\        |
             |        execute_sql ------+
             |             |
             |       summarize_result
@@ -59,6 +66,12 @@ from copilot.agent import nodes
 from copilot.agent.compaction import compact_history_node
 from copilot.agent.dialogue import append_to_dialogue_node, reset_per_turn_node
 from copilot.agent.retriever import retrieve_schema_node
+from copilot.agent.risk import (
+    await_confirmation_node,
+    check_risk_node,
+    route_after_confirmation,
+    route_after_risk,
+)
 from copilot.agent.state import AgentState
 
 
@@ -82,6 +95,8 @@ def build_graph(
     workflow.add_node("retrieve_schema", retrieve_schema_node)
     workflow.add_node("generate_sql", nodes.generate_sql_node)
     workflow.add_node("validate_sql", nodes.validate_sql_node)
+    workflow.add_node("check_risk", check_risk_node)
+    workflow.add_node("await_confirmation", await_confirmation_node)
     workflow.add_node("execute_sql", nodes.execute_sql_node)
     workflow.add_node("summarize_result", nodes.summarize_result_node)
     workflow.add_node("finalize_error", nodes.finalize_error_node)
@@ -105,14 +120,40 @@ def build_graph(
     workflow.add_edge("retrieve_schema", "generate_sql")
     workflow.add_edge("generate_sql", "validate_sql")
 
-    # After validation: success -> execute, retryable error -> loop,
+    # After validation: success -> check_risk (week 7 inserts a risk
+    # gate between validate and execute), retryable error -> loop,
     # terminal error -> finalize.
     workflow.add_conditional_edges(
         "validate_sql",
         nodes.route_after_validate,
         {
-            "execute_sql": "execute_sql",
+            # NOTE: ``nodes.route_after_validate`` returns the string
+            # ``"execute_sql"`` to mean "the SQL is valid; go run it".
+            # Week 7 swaps the destination to ``check_risk`` so the
+            # cost gate runs first; the router contract is unchanged.
+            "execute_sql": "check_risk",
             "generate_sql": "generate_sql",
+            "finalize_error": "finalize_error",
+        },
+    )
+
+    # Week 7 — the human-in-the-loop pair. ``check_risk`` is cheap
+    # (one EXPLAIN call) and routes around itself when the SQL is
+    # below threshold; only the expensive branch reaches
+    # ``await_confirmation`` and pauses the graph.
+    workflow.add_conditional_edges(
+        "check_risk",
+        route_after_risk,
+        {
+            "execute_sql": "execute_sql",
+            "await_confirmation": "await_confirmation",
+        },
+    )
+    workflow.add_conditional_edges(
+        "await_confirmation",
+        route_after_confirmation,
+        {
+            "execute_sql": "execute_sql",
             "finalize_error": "finalize_error",
         },
     )

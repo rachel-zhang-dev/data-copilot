@@ -304,3 +304,39 @@
   expects:
     sql_must_contain: [products]
     row_count: { min: 0, max: 200 }
+
+# =========================================================================
+# expensive (3) — questions where the LLM is likely to produce a SQL
+# whose Postgres planner cost exceeds risk_explain_cost_threshold.
+# The eval runner auto-approves the resulting HITL pause; pause
+# behaviour itself is covered by tests/test_risk.py.
+#
+# Asserts focus on the SQL shape (the right tables / joins are
+# present). row_count is left bounded since the pre-HITL LIMIT cap
+# means the actual result set stays small even on Cartesian-ish
+# joins.
+# =========================================================================
+
+- id: expensive-cartesian-join
+  question: Show me every order with every product and every customer detail.
+  category: expensive
+  expects:
+    sql_must_contain: [orders]
+    sql_should_contain_any: [products, customers, order_details, join]
+    row_count: { min: 0, max: 100 }
+
+- id: expensive-unfiltered-employees-orders
+  question: Pair each employee with every order in the database.
+  category: expensive
+  expects:
+    sql_must_contain: [employees, orders]
+    sql_should_contain_any: [join, cross]
+    row_count: { min: 0, max: 100 }
+
+- id: expensive-all-suppliers-products
+  question: List every supplier together with all their products and categories.
+  category: expensive
+  expects:
+    sql_must_contain: [suppliers, products]
+    sql_should_contain_any: [categories, join]
+    row_count: { min: 0, max: 100 }

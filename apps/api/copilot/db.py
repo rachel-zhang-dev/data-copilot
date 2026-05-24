@@ -100,6 +100,40 @@ def run_select(sql: str, *, engine: Engine | None = None) -> list[dict[str, Any]
         return [_row_to_dict(r) for r in result.fetchall()]
 
 
+def explain_cost(
+    sql: str, *, engine: Engine | None = None, timeout_ms: int = 500
+) -> float:
+    """Return Postgres' planner ``Total Cost`` for ``sql``.
+
+    Uses ``EXPLAIN (FORMAT JSON)`` so the result is dialect-stable and
+    easy to parse without scraping text. The query is **not** executed;
+    only the planner runs.
+
+    ``timeout_ms`` is enforced via ``SET LOCAL statement_timeout`` so a
+    pathological query that stalls the planner cannot stall the agent.
+    On any failure — timeout, parse error, planner exception — this
+    function raises and the caller is expected to fall through (the
+    risk node treats a failed cost lookup as "unknown, let it run").
+    """
+    eng = engine or get_engine()
+    with eng.connect() as conn:
+        # Wrap in a transaction so SET LOCAL is scoped to this call only
+        # and never leaks into the next checked-out connection.
+        with conn.begin():
+            conn.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
+            row = conn.execute(text(f"EXPLAIN (FORMAT JSON) {sql}")).fetchone()
+    if row is None:
+        raise RuntimeError("EXPLAIN returned no rows")
+    payload = row[0]
+    # Postgres' explain JSON shape: [{"Plan": {"Total Cost": float, ...}, ...}]
+    if not isinstance(payload, list) or not payload:
+        raise RuntimeError(f"unexpected EXPLAIN JSON shape: {payload!r}")
+    plan = payload[0].get("Plan")
+    if not isinstance(plan, dict) or "Total Cost" not in plan:
+        raise RuntimeError(f"EXPLAIN JSON missing Plan.Total Cost: {payload!r}")
+    return float(plan["Total Cost"])
+
+
 _BUSINESS_TABLE_FILTER = (
     "table_schema = 'public' "
     "AND table_type = 'BASE TABLE' "

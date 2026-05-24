@@ -11,6 +11,8 @@
 #   ./scripts/dev.sh index [--force]   # (re)build schema_embeddings
 #   ./scripts/dev.sh ask "..."         # quick one-shot agent invocation
 #   ./scripts/dev.sh ask --cid ID "...". # continue a thread (multi-turn dialogue)
+#   ./scripts/dev.sh ask --cid ID --resume approve|reject
+#                                      # respond to a pending HITL prompt (week 7)
 #   ./scripts/dev.sh eval [--experiment NAME] [--dry-run]
 #                                      # run A/B eval harness (week 6)
 
@@ -75,22 +77,45 @@ case "$cmd" in
     # Optional --cid <id> flag to continue an existing conversation.
     # When omitted, the script generates a fresh UUID and prints it so the
     # user can pass it back on the next call (week-5 multi-turn support).
+    # Optional --resume <approve|reject> answers a paused HITL prompt
+    # (week 7). When --resume is set, --cid is required and any positional
+    # question is ignored.
     conversation_id=""
-    if [ "${1:-}" = "--cid" ]; then
-      conversation_id="${2:?--cid requires a thread id}"
-      shift 2
+    resume=""
+    while true; do
+      case "${1:-}" in
+        --cid)
+          conversation_id="${2:?--cid requires a thread id}"
+          shift 2
+          ;;
+        --resume)
+          resume="${2:?--resume requires approve|reject}"
+          shift 2
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+    if [ -n "$resume" ] && [ -z "$conversation_id" ]; then
+      echo "--resume requires --cid <thread-id>" >&2
+      exit 1
     fi
     question="${*:-What can you do?}"
     cd apps/api
-    # Pass the conversation id and question through the environment to avoid
-    # bash-vs-python quoting pitfalls inside the heredoc.
+    # Pass the conversation id, question, and resume mode through the
+    # environment to avoid bash-vs-python quoting pitfalls inside the
+    # heredoc.
     export DC_CONVERSATION_ID="$conversation_id"
     export DC_QUESTION="$question"
+    export DC_RESUME="$resume"
     uv run python <<'PYEOF'
 import asyncio
 import json
 import os
 import uuid
+
+from langgraph.types import Command
 
 from copilot.agent import build_graph
 from copilot.checkpointer import (
@@ -107,9 +132,42 @@ async def main() -> None:
         graph = build_graph(checkpointer=await get_checkpointer())
         conversation_id = os.environ.get("DC_CONVERSATION_ID") or str(uuid.uuid4())
         question = os.environ["DC_QUESTION"]
+        resume = os.environ.get("DC_RESUME") or ""
         config = {"configurable": {"thread_id": conversation_id}}
+        if resume:
+            payload = Command(resume=resume)
+        else:
+            payload = {"question": question}
         async with conversation_lock(conversation_id):
-            result = await graph.ainvoke({"question": question}, config=config)
+            result = await graph.ainvoke(payload, config=config)
+
+        interrupts = result.get("__interrupt__") or []
+        pending = None
+        if interrupts:
+            value = getattr(interrupts[0], "value", None)
+            pending = value if isinstance(value, dict) else None
+
+        if pending is not None:
+            print("--- PENDING CONFIRMATION ---")
+            print(f"reason:     {pending.get('reason')}")
+            print(f"total_cost: {pending.get('total_cost')}")
+            print(f"threshold:  {pending.get('threshold')}")
+            if pending.get("sql"):
+                print("--- SQL ---")
+                print(pending["sql"])
+            print("--- THREAD ---")
+            print(f"conversation_id: {conversation_id}")
+            print(f"turn_index:      {result.get('turn_index')}")
+            print(
+                "(approve with: ./scripts/dev.sh ask --cid "
+                f"{conversation_id} --resume approve)"
+            )
+            print(
+                "(reject  with: ./scripts/dev.sh ask --cid "
+                f"{conversation_id} --resume reject)"
+            )
+            return
+
         if result.get("sql"):
             print("--- SQL ---")
             print(result["sql"])
