@@ -208,3 +208,40 @@ The threshold is exposed via `RISK_EXPLAIN_COST_THRESHOLD` env var.
 * **Eval coverage.** Add an `expensive` case category with the
   reverse asymmetric A/B (HITL on / off) — done in this commit,
   but should grow as the cases.yaml does.
+
+### Deferred from the Week 7 post-merge audit
+
+Items consciously scoped out after the post-merge audit; track here
+so they are visible alongside the design they relate to.
+
+* **Threshold calibration on real Northwind.** The default
+  `risk_explain_cost_threshold = 1000.0` was chosen from a back-of-
+  the-envelope estimate, not measured ``EXPLAIN`` numbers. Once a
+  developer has Docker + Postgres up, run a sweep of representative
+  questions (the existing eval set is fine), record the cost
+  distribution, and bump the default accordingly. The wrong value
+  here is silently lossy (false positives nag the user, false
+  negatives skip the gate entirely).
+* **Abandoned-interrupt semantics.** Empirically, sending a fresh
+  `ainvoke({"question": ...})` on a thread paused at
+  ``await_confirmation`` causes LangGraph to drop the pending
+  interrupt and start a new turn from `reset_per_turn`. The
+  previously-paused turn leaves no trace in `dialogue` (because
+  `append_to_dialogue` never ran). This is reasonable user
+  semantics ("I changed my mind") but invisible to operators and
+  to future UI states. When the Next.js UI in Week 10 lands,
+  surface a "you have a pending decision — discard it?" confirm
+  before letting users send a fresh question on the same thread.
+* **`explain_cost` failure observability.** Today a failing
+  ``EXPLAIN`` (timeout, auth, network) logs at `WARNING` and the
+  gate fails open. That is the correct user-facing default, but it
+  means a 100%-broken `EXPLAIN` pipeline silently disables HITL
+  with no alarm. Add a rate-limited error metric when Week 11 wires
+  up observability.
+* **Integration suite re-verification.** ``pytest -m integration``
+  was not re-run against the new `check_risk` node because Docker
+  was offline during the audit. Static analysis suggests only one
+  query (`Which 5 products have the highest total revenue?`) might
+  trip the threshold, and its assertions only inspect SQL content
+  so a pause would still let it pass — but this should be empirically
+  confirmed on the next dev box that boots Postgres.
