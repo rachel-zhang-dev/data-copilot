@@ -15,6 +15,43 @@ from typing import Any, Literal, get_args
 
 import yaml
 
+
+class _StrictLoader(yaml.SafeLoader):  # type: ignore[misc]
+    """``SafeLoader`` that refuses to silently drop duplicate mapping keys.
+
+    PyYAML's default behaviour is "last value wins", which let
+    ``followup-only-the-discontinued`` ship with two ``content:`` lines
+    in its user turn (one was silently discarded). We never want a typo
+    in cases.yaml to half-corrupt an eval case while still loading
+    cleanly — that risks misleading A/B numbers.
+
+    The ``type: ignore`` is needed because PyYAML ships no type stubs
+    so ``SafeLoader`` lands as ``Any`` under strict mypy.
+    """
+
+
+def _no_duplicate_keys(
+    loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"duplicate key {key!r} in mapping",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _no_duplicate_keys,
+)
+
 Category = Literal[
     "count",
     "single_table_filter",
@@ -222,7 +259,12 @@ def load_cases(path: str | Path) -> list[CaseSpec]:
         ValueError: duplicate IDs, invalid category / expect, etc.
     """
     p = Path(path)
-    raw = yaml.safe_load(p.read_text())
+    try:
+        raw = yaml.load(p.read_text(), Loader=_StrictLoader)
+    except yaml.constructor.ConstructorError as exc:
+        # Surface duplicate-key errors with the same ValueError shape as
+        # every other strictness violation, so callers only catch one type.
+        raise ValueError(f"{p}: {exc.problem} ({exc.problem_mark})") from exc
     if raw is None:
         return []
     if not isinstance(raw, list):

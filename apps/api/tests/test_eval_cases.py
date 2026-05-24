@@ -237,6 +237,44 @@ def test_empty_yaml_returns_empty_list(tmp_path: Path) -> None:
     assert load_cases(p) == []
 
 
+def test_duplicate_yaml_keys_rejected(tmp_path: Path) -> None:
+    """YAML's default 'last value wins' silently corrupted one of the
+    real cases (followup-only-the-discontinued had two `content:` keys
+    on the same user turn). The strict loader must refuse that shape."""
+    p = _write_yaml(
+        tmp_path,
+        """
+- id: dup
+  question: q
+  category: follow_up
+  setup_history:
+    - role: user
+      content: First
+      content: Second
+  expects:
+    sql_must_contain: [a]
+""",
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_cases(p)
+
+
+def test_duplicate_top_level_keys_rejected(tmp_path: Path) -> None:
+    p = _write_yaml(
+        tmp_path,
+        """
+- id: x
+  question: q
+  question: q2
+  category: count
+  expects:
+    sql_must_contain: [a]
+""",
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_cases(p)
+
+
 def test_expect_immutable() -> None:
     e = Expect(sql_must_contain=("a",))
     with pytest.raises(Exception):  # noqa: B017 — frozen=True raises FrozenInstanceError

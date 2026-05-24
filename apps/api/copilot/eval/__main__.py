@@ -31,6 +31,15 @@ from copilot.eval.reports.markdown import render_comparison
 log = logging.getLogger("copilot.eval")
 
 
+# Resolve the default reports directory relative to the repo root rather
+# than the current working directory. ``scripts/dev.sh eval`` ``cd``s into
+# ``apps/api/`` before invoking this module, so a CWD-relative default
+# silently wrote reports to ``apps/api/docs/eval/`` instead of the
+# repo-root ``docs/eval/`` advertised in the README and ADR 0007.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_REPORTS_DIR = _REPO_ROOT / "docs" / "eval"
+
+
 _EXPERIMENTS = {
     "schema_rag": run_schema_rag_ab,
     "self_healing": run_self_healing_ab,
@@ -58,8 +67,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("docs/eval"),
-        help="Directory to write markdown reports into.",
+        default=DEFAULT_REPORTS_DIR,
+        help=(
+            "Directory to write markdown reports into. Defaults to the "
+            "repo-root ``docs/eval/`` regardless of the CWD the CLI was "
+            "launched from."
+        ),
     )
     p.add_argument(
         "--dry-run",

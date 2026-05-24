@@ -239,10 +239,9 @@
   setup_history:
     - role: user
       content: List products in the Beverages category.
-      content: How many products in Beverages?
     - role: assistant
-      content: 12 products.
-      sql: SELECT count(*) FROM products p JOIN categories c ON p.category_id = c.category_id WHERE c.category_name = 'Beverages' LIMIT 100
+      content: 12 products listed.
+      sql: SELECT product_name FROM products p JOIN categories c ON p.category_id = c.category_id WHERE c.category_name = 'Beverages' LIMIT 100
   expects:
     sql_must_contain: [products, discontinued]
 
