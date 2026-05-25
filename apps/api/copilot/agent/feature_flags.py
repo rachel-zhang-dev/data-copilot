@@ -34,6 +34,12 @@ from copilot.agent.state import ErrorClass
 SCHEMA_RAG_ENABLED: bool = True
 DIALOGUE_CONTEXT_ENABLED: bool = True
 
+# Week 12.5 — multi-agent flag. When False, the supervisor short-
+# circuits straight to the SQL Specialist's output with no Analyst
+# call. Production default is on; the eval harness flips it for the
+# fourth A/B (``analyst_enabled``).
+ANALYST_ENABLED: bool = True
+
 
 @contextmanager
 def override(
@@ -41,23 +47,27 @@ def override(
     schema_rag_enabled: bool | None = None,
     dialogue_context_enabled: bool | None = None,
     retry_budget: dict[ErrorClass, int] | None = None,
+    analyst_enabled: bool | None = None,
 ) -> Iterator[None]:
     """Flip flags for the duration of the ``with`` block.
 
     Any argument left as ``None`` keeps its current value. On exit
-    (including via exception) all three flags are restored, even if
+    (including via exception) all four flags are restored, even if
     only some were set.
     """
-    global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED
+    global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED, ANALYST_ENABLED
 
     prev_rag = SCHEMA_RAG_ENABLED
     prev_dlg = DIALOGUE_CONTEXT_ENABLED
+    prev_analyst = ANALYST_ENABLED
     prev_budget = dict(_nodes_mod.RETRY_BUDGET)
 
     if schema_rag_enabled is not None:
         SCHEMA_RAG_ENABLED = schema_rag_enabled
     if dialogue_context_enabled is not None:
         DIALOGUE_CONTEXT_ENABLED = dialogue_context_enabled
+    if analyst_enabled is not None:
+        ANALYST_ENABLED = analyst_enabled
     if retry_budget is not None:
         # Mutate in place so existing references to the dict (e.g. in
         # tests that imported the module attribute) see the change.
@@ -69,5 +79,6 @@ def override(
     finally:
         SCHEMA_RAG_ENABLED = prev_rag
         DIALOGUE_CONTEXT_ENABLED = prev_dlg
+        ANALYST_ENABLED = prev_analyst
         _nodes_mod.RETRY_BUDGET.clear()
         _nodes_mod.RETRY_BUDGET.update(prev_budget)

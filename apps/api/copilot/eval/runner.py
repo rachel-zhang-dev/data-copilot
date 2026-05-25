@@ -270,6 +270,7 @@ async def run_eval(
         schema_rag_enabled=cfg.schema_rag_enabled,
         dialogue_context_enabled=cfg.dialogue_context_enabled,
         retry_budget=cfg.retry_budget_override,
+        analyst_enabled=cfg.analyst_enabled,
     ):
         for case in cases:
             log.info("  [%s] %s — %s", cfg.label, case.id, case.category)

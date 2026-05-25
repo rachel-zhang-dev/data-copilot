@@ -38,6 +38,13 @@ class ExperimentConfig:
     """When False, ``_format_history_block`` returns the empty string
     so ``generate_sql`` cannot see prior turns. Used by A3."""
 
+    analyst_enabled: bool = True
+    """When False, the week-12.5 supervisor short-circuits after the
+    SQL Specialist and never invokes the Analyst. Used by A4 to
+    measure the Analyst's token-cost / latency contribution and to
+    verify ``success_rate`` stays flat (the Analyst is additive, not
+    gating)."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -76,4 +83,11 @@ WITHOUT_DIALOGUE_CONTEXT = ExperimentConfig(
     dialogue_context_enabled=False,
     notes="generate_sql does not see previous turns; follow-ups are blind.",
     extra_tags=("a3", "dialogue_context_off"),
+)
+
+WITHOUT_ANALYST = ExperimentConfig(
+    label="analyst_off",
+    analyst_enabled=False,
+    notes="Supervisor short-circuits after SQL; no Analyst follow-ups or drill-downs.",
+    extra_tags=("a4", "analyst_off"),
 )

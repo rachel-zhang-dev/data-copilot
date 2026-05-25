@@ -37,6 +37,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, model_validator
 
 from copilot.agent import build_graph
+from copilot.agents import build_supervisor_graph
 from copilot.cache import get_embedding_cache
 from copilot.checkpointer import (
     conversation_lock,
@@ -96,7 +97,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     schema = get_schema_ddl()
     log.info("schema cache warmed (%d chars)", len(schema))
     await setup_checkpointer()
-    app.state.graph = build_graph(checkpointer=await get_checkpointer())
+    # Week 12.5: the SQL Specialist is still the same week-12 graph,
+    # but a Supervisor wraps it (rule-based router + Analyst worker).
+    # ``app.state.graph`` is now the supervisor; the inner Specialist
+    # is what ``/ask/stream`` streams from.
+    sql_graph = build_graph(checkpointer=await get_checkpointer())
+    app.state.sql_graph = sql_graph
+    app.state.graph = build_supervisor_graph(sql_graph)
     try:
         yield
     finally:
@@ -107,7 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Data Copilot API",
     description="Enterprise Text-to-SQL agent.",
-    version="0.11.0",
+    version="0.12.0",
     lifespan=lifespan,
 )
 
@@ -244,6 +251,14 @@ class AskResponse(BaseModel):
     # and including this turn. Always present (zero-initialised) so
     # consumers never have to ``.get(...)`` defensively.
     cost: dict[str, Any] | None = None
+    # Week 12.5 — multi-agent outputs. ``analyst`` is the structured
+    # envelope (``anomalies`` / ``followups`` / optional ``drill_down``);
+    # ``drill_downs`` is the list of recursive Specialist invocations
+    # the Analyst triggered (each entry is a full AskResponse-shaped
+    # dict, in invocation order). Both are ``None`` / empty when
+    # ANALYST_ENABLED is off or the supervisor short-circuited.
+    analyst: dict[str, Any] | None = None
+    drill_downs: list[dict[str, Any]] = []
 
 
 # ---------------------------------------------------------------------------
@@ -329,13 +344,17 @@ def _build_ask_response(
     *,
     conversation_id: str,
     debug: bool,
+    analyst: dict[str, Any] | None = None,
+    drill_downs: list[dict[str, Any]] | None = None,
 ) -> AskResponse:
     """Project a LangGraph ``ainvoke`` (or fully-consumed ``astream``)
     result into the public ``AskResponse`` shape.
 
-    Centralised here so the streaming endpoint and the legacy
-    ``/ask`` endpoint emit identical ``done`` payloads; any future
-    field added to the response only has to be wired in one place.
+    Centralised here so the streaming endpoint, the legacy ``/ask``
+    endpoint, and the week-12.5 supervisor endpoint emit identical
+    payloads; any future field added to the response only has to be
+    wired in one place. ``analyst`` and ``drill_downs`` are week-12.5
+    additions surfaced by the supervisor wrapper below.
     """
     pending = _first_interrupt_payload(result)
     failures = result.get("attempts") or []
@@ -363,6 +382,8 @@ def _build_ask_response(
             status="pending_confirmation",
             pending_risk=pending,
             cost=cost,
+            analyst=None,
+            drill_downs=[],
         )
 
     return AskResponse(
@@ -381,6 +402,48 @@ def _build_ask_response(
         chart_kind=result.get("chart_kind"),
         chart_spec=result.get("chart_spec"),
         cost=cost,
+        analyst=analyst,
+        drill_downs=drill_downs or [],
+    )
+
+
+def _build_response_from_supervisor(
+    supervisor_state: dict[str, Any],
+    *,
+    conversation_id: str,
+    debug: bool,
+) -> AskResponse:
+    """Unpack a ``SupervisorState`` into ``AskResponse``.
+
+    Layout assumed:
+      * ``supervisor_state['sql_result']`` — the FINAL Specialist
+        state (either the original answer, or the drill-down's
+        result if Analyst recursed).
+      * ``supervisor_state['analyst']`` — typed ``AnalystResponse``
+        or ``None``.
+      * ``supervisor_state['drill_downs']`` — list of *prior*
+        Specialist states (one per recursive invocation). We project
+        each into a nested ``AskResponse`` dict so the UI can render
+        "drill-down 1 was about Germany customers, top-level answer
+        is about the whole world" with one payload.
+    """
+    sql_result = supervisor_state.get("sql_result") or {}
+    analyst_obj = supervisor_state.get("analyst")
+    analyst_dump = (
+        analyst_obj.model_dump() if analyst_obj is not None and hasattr(analyst_obj, "model_dump")
+        else None
+    )
+    raw_drills = supervisor_state.get("drill_downs") or []
+    drill_dumps = [
+        _build_ask_response(d, conversation_id=conversation_id, debug=debug).model_dump()
+        for d in raw_drills
+    ]
+    return _build_ask_response(
+        sql_result,
+        conversation_id=conversation_id,
+        debug=debug,
+        analyst=analyst_dump,
+        drill_downs=drill_dumps,
     )
 
 
@@ -401,7 +464,12 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     same ``conversation_id`` and ``resume="approve"|"reject"`` to
     continue.
     """
-    graph = app.state.graph
+    # Week 12.5: ``app.state.graph`` is the *supervisor*; the inner
+    # SQL Specialist (used by the streaming endpoint) lives at
+    # ``app.state.sql_graph``. The supervisor's checkpoint probe goes
+    # through the Specialist because that's where ``aget_state`` lives.
+    supervisor = app.state.graph
+    sql_graph = app.state.sql_graph
     conversation_id = req.conversation_id or str(uuid.uuid4())
 
     # LangGraph keys persistence on ``thread_id``; we treat
@@ -409,10 +477,11 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     config: dict[str, Any] = {"configurable": {"thread_id": conversation_id}}
 
     # Resume requests must target a thread that is actually paused.
-    # We probe the checkpointer up front so a stray resume call gets a
-    # crisp 400 instead of a confusing no-op run.
+    # We probe the SQL Specialist's checkpointer (the only one with
+    # persisted state) up front so a stray resume call gets a crisp
+    # 400 instead of a confusing no-op run.
     if req.resume is not None:
-        snapshot = await graph.aget_state(config)
+        snapshot = await sql_graph.aget_state(config)
         if not getattr(snapshot, "interrupts", None):
             raise HTTPException(
                 status_code=400,
@@ -428,12 +497,21 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     # overwrites the earlier turn's diff. Different conversation_ids
     # use different lock keys and stay fully parallel.
     async with conversation_lock(conversation_id):
-        if req.resume is not None:
-            result = await graph.ainvoke(Command(resume=req.resume), config=config)
-        else:
-            result = await graph.ainvoke({"question": req.question}, config=config)
+        supervisor_state = await supervisor.ainvoke(
+            {
+                "question": req.question,
+                "conversation_id": conversation_id,
+                "resume": req.resume,
+                "debug": debug,
+                "hop_count": 0,
+                "drill_downs": [],
+            },
+            config=config,
+        )
 
-    return _build_ask_response(result, conversation_id=conversation_id, debug=debug)
+    return _build_response_from_supervisor(
+        supervisor_state, conversation_id=conversation_id, debug=debug
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -582,8 +660,16 @@ async def ask_stream(req: AskRequest, debug: bool = False) -> StreamingResponse:
     ``X-Accel-Buffering: no`` so reverse proxies (Nginx, Cloudflare)
     do not buffer the response — without this, SSE would only flush
     when the connection closed, defeating the point of streaming.
+
+    Week 12.5: the streaming endpoint deliberately streams from the
+    SQL Specialist (``app.state.sql_graph``), NOT the supervisor.
+    Reason: the supervisor sees the Specialist's whole run as a
+    single sub-graph chunk, which would collapse all the per-node
+    phase events the UI relies on. Multi-agent Analyst output stays
+    on the non-streaming ``/ask`` path; surfacing it over SSE is
+    tracked in ADR 0014 future work.
     """
-    graph = app.state.graph
+    graph = app.state.sql_graph
     conversation_id = req.conversation_id or str(uuid.uuid4())
     config: dict[str, Any] = {"configurable": {"thread_id": conversation_id}}
 

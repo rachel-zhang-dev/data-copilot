@@ -49,6 +49,7 @@ You ask a business question. The agent retrieves the right slice of schema, writ
 | | |
 |---|---|
 | 🧠 **LangGraph state machine, 13 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
+| 🤝 **Multi-agent supervisor + analyst** | Rule-based supervisor orchestrates a SQL Specialist and an Analyst worker; bounded recursive drill-down loop (max 2 hops) |
 | 📚 **Schema-aware RAG** | BGE-M3 embeddings over pgvector + FK 1-hop expansion + named-table fast path + full-schema fallback |
 | 🔍 **Comparative eval harness** | 32 hand-written cases × 3 A/B experiments (RAG on/off, self-heal on/off, dialogue context on/off); markdown reports archived per run |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
@@ -457,12 +458,13 @@ Sentry, and the Redis-migration design.
 | 4 ✅ | Refactor to full LangGraph state machine with self-healing |
 | 5 ✅ | Multi-turn dialogue + chat history compaction |
 | 6 ✅ | Evaluation set + 3 A/B experiments |
-| 7 | Human-in-the-loop confirmation for destructive / expensive queries |
-| 8 | Visualisation generation + insight summaries |
-| 9 | Caching layer · cost report · retries with exponential backoff |
-| 10 | Next.js front-end with streaming responses |
-| 11 | Docker production image · Fly.io deploy · monitoring |
-| 12 | Polish, demo video, blog series, simplify onboarding |
+| 7 ✅ | Human-in-the-loop confirmation for expensive queries |
+| 8 ✅ | Visualisation generation + structured insight |
+| 9 ✅ | Caching layer · cost report · retries with exponential backoff |
+| 10 ✅ | Next.js front-end with streaming responses |
+| 11 ✅ | Docker production image · Fly.io deploy · monitoring · Redis cache |
+| 12 ✅ | Polish, demo video, blog outline, simplified onboarding |
+| 12.5 ✅ | Multi-agent: supervisor + analyst pattern (bounded drill-down loop) |
 
 ## Project layout
 

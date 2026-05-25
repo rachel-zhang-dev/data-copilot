@@ -28,6 +28,7 @@ from pathlib import Path
 
 from copilot.eval.cases import DEFAULT_CASES_PATH, load_cases
 from copilot.eval.experiments import (
+    run_analyst_ab,
     run_dialogue_context_ab,
     run_schema_rag_ab,
     run_self_healing_ab,
@@ -51,6 +52,7 @@ _EXPERIMENTS = {
     "schema_rag": run_schema_rag_ab,
     "self_healing": run_self_healing_ab,
     "dialogue_context": run_dialogue_context_ab,
+    "analyst": run_analyst_ab,
 }
 
 
