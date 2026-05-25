@@ -18,8 +18,16 @@ RUN corepack enable
 COPY apps/web/package.json apps/web/pnpm-lock.yaml* ./
 # ``pnpm install --frozen-lockfile`` fails fast if the committed lock
 # is out of date, which is what we want in CI / build.
+#
+# ``--config.strict-dep-builds=false`` keeps pnpm 10 from blowing up
+# on lifecycle scripts (esbuild / sharp / unrs-resolver). The
+# packages are vetted upstream — production-grade dependencies of
+# Next.js, Vitest, and ESLint — and ``package.json#pnpm.onlyBuiltDependencies``
+# already lists them; the flag here is belt-and-suspenders for
+# environments where the package-level allowlist isn't picked up
+# (a known pnpm-10 quirk inside fresh container runtimes).
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --config.strict-dep-builds=false
 
 
 FROM node:22-alpine AS builder

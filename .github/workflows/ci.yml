@@ -1,0 +1,151 @@
+name: CI
+
+# Runs on every push to main + every PR opened against main. The three
+# jobs are independent: backend / frontend / docker each fail on their
+# own without blocking the others, so a Dockerfile typo doesn't hide a
+# legit mypy regression.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight workflow when a new commit lands on the same PR
+# / branch — we never care about results from the older revision.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Backend: ruff + mypy + the non-integration pytest suite.
+  #
+  # Integration tests are skipped by design — they need real DeepSeek +
+  # SiliconFlow keys and a live Postgres instance. The harness is in the
+  # repo and runs locally via ``./scripts/dev.sh test-integration``; CI
+  # would either burn API credits on every PR or be flaky.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: backend (ruff · mypy · pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      # Conftest defaults silence these; setting them explicitly keeps
+      # the CI logs honest about which placeholder values are in play.
+      DEEPSEEK_API_KEY: ci-placeholder
+      SILICONFLOW_API_KEY: ci-placeholder
+      DATABASE_URL: postgresql://copilot:copilot_dev_pwd@localhost:5432/northwind
+      LANGSMITH_TRACING: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ``--all-extras`` pulls in the eval + dev groups so mypy can
+      # type-check the harness against its real dependencies.
+      - name: Sync deps
+        run: uv sync --all-extras
+        working-directory: .
+
+      - name: ruff
+        run: uv run ruff check copilot tests
+
+      - name: mypy
+        run: uv run mypy copilot
+
+      - name: pytest (unit + integration-style, but not the @integration suite)
+        run: uv run pytest -m "not integration"
+
+  # ---------------------------------------------------------------------------
+  # Frontend: typecheck + vitest + ``next build``.
+  #
+  # We do *not* run ``next start`` smoke tests — the streaming endpoint
+  # needs the FastAPI backend, which CI doesn't spin up. The standalone
+  # build is enough to catch React / TS / Vega-Lite regressions.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend (typecheck · vitest · next build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: vitest
+        run: pnpm test
+
+      - name: next build (standalone)
+        run: pnpm build
+        env:
+          # The build evaluates ``next.config.ts`` which reads
+          # ``API_BASE_URL``; a placeholder is fine because the build
+          # never makes network calls.
+          API_BASE_URL: http://api.example.com
+
+  # ---------------------------------------------------------------------------
+  # Docker images: build both, no push. Confirms the Dockerfiles still
+  # apply against the current source tree — they are the deploy
+  # artefacts on the Fly.io side, so a silent breakage here means
+  # broken production.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker (api · web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          # GHA cache makes the second run ~3x faster than cold.
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

@@ -1,0 +1,7 @@
+# Keep ``apps/web/public/`` in version control even when it's empty.
+#
+# Next.js scaffolds expect this directory for static assets (favicons,
+# OG images, robots.txt). The week-10 build doesn't ship any yet, but
+# the Dockerfile's runtime stage ``COPY --from=builder /app/public ./public``
+# fails if the directory is missing — and ``next build`` doesn't
+# create one for you. The gitkeep is the smallest fix.

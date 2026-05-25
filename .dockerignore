@@ -44,6 +44,11 @@ docs/
 docs/eval/*.md
 scripts/
 *.md
+# Required by uv/hatchling: pyproject.toml declares ``readme =
+# "README.md"`` and the build backend reads it during ``uv sync``. The
+# alternative would be dropping the README from the package
+# description, which we don't want to do.
+!README.md
 !apps/api/README.md
 !apps/web/README.md
 LICENSE
