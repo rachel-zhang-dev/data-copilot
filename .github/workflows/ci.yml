@@ -99,16 +99,25 @@ jobs:
           cache-dependency-path: apps/web/pnpm-lock.yaml
 
       - name: pnpm install
-        run: pnpm install --frozen-lockfile
+        # ``--config.strict-dep-builds=false`` lets esbuild / sharp /
+        # unrs-resolver run their lifecycle scripts. ``package.json``
+        # also lists them in ``pnpm.onlyBuiltDependencies`` but pnpm 10
+        # in fresh container runtimes occasionally ignores the package-
+        # level allowlist; the flag is belt-and-suspenders (matches
+        # what the frontend Dockerfile does).
+        run: pnpm install --frozen-lockfile --config.strict-dep-builds=false
 
       - name: typecheck
-        run: pnpm typecheck
+        # ``pnpm <script>`` shorthand triggers recursive-exec semantics
+        # on some pnpm 10 setups (``ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL``);
+        # ``pnpm run`` is the explicit, always-correct form.
+        run: pnpm run typecheck
 
       - name: vitest
-        run: pnpm test
+        run: pnpm run test
 
       - name: next build (standalone)
-        run: pnpm build
+        run: pnpm run build
         env:
           # The build evaluates ``next.config.ts`` which reads
           # ``API_BASE_URL``; a placeholder is fine because the build
