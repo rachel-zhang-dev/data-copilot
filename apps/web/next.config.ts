@@ -3,16 +3,19 @@ import type { NextConfig } from "next";
 /**
  * Next.js configuration.
  *
- * `API_BASE_URL` is the only knob the front-end needs to talk to the
- * FastAPI backend. We pass it through `env` so Route Handlers (which
- * run on the Node runtime) can read it from `process.env`. The
- * default points at the local dev server started by
- * `./scripts/dev.sh api`.
+ * `API_BASE_URL` is read at runtime by the server-only Route Handlers
+ * (`app/api/**`). Do NOT declare it under `env: {}` here — that block
+ * is Next.js's build-time inliner (it behaves like webpack's
+ * DefinePlugin), which would freeze the value to whatever `process.env`
+ * held during `next build`. Since the web container is built before
+ * any runtime env vars are wired up, the inlined value would be the
+ * fallback `http://localhost:8000`, defeating the docker-compose
+ * service-name override (`http://api:8000`) at runtime.
+ *
+ * Plain `process.env.X` reads inside server code are evaluated at
+ * runtime, so leaving `env` unset is the correct choice.
  */
 const nextConfig: NextConfig = {
-  env: {
-    API_BASE_URL: process.env.API_BASE_URL ?? "http://localhost:8000",
-  },
   // SSE responses must not be buffered. Disabling Next's gzip on the
   // streaming Route Handler is done per-handler via response headers;
   // no global config needed.

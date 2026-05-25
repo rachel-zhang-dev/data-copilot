@@ -552,17 +552,26 @@ def _sse_heartbeat() -> str:
 _INTERNAL_NODES = frozenset({"reset_per_turn", "append_to_dialogue", "compact_history"})
 
 
-def _phase_payload(node: str, diff: dict[str, Any]) -> dict[str, Any]:
+def _phase_payload(node: str, diff: Any) -> dict[str, Any]:
     """Reduce a node's full state diff into a phase payload that's safe
     to ship over the wire.
 
     Filters out internal bookkeeping fields (``messages``, big blobs
     like ``relevant_schema``) so the SSE stream stays small and the
     client doesn't have to know about LangGraph internals.
+
+    ``diff`` is typed as ``Any`` because LangGraph 1.x occasionally
+    emits non-dict update values for terminal / interrupt-adjacent
+    chunks (e.g. ``None`` once the graph hits ``END``). Treat anything
+    that isn't a mapping as an empty diff rather than crashing the
+    whole stream.
     """
     keep = {"intent", "sql", "row_count", "error", "answer", "chart_kind",
             "risk_decision", "turn_index"}
-    safe_diff: dict[str, Any] = {k: v for k, v in diff.items() if k in keep}
+    if isinstance(diff, dict):
+        safe_diff: dict[str, Any] = {k: v for k, v in diff.items() if k in keep}
+    else:
+        safe_diff = {}
     return {
         "node": node,
         "diff": safe_diff,

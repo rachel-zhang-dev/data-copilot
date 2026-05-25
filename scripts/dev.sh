@@ -268,7 +268,12 @@ PYEOF
       ./scripts/make-env.sh
     fi
     echo "Starting the full stack (postgres + api + web)..."
-    docker compose up -d
+    # ``--profile app`` is required because the api/web services are
+    # gated behind it in docker-compose.yml (so plain ``dev.sh up`` keeps
+    # bringing only Postgres, like it always did). Without this flag,
+    # ``docker compose up -d`` would skip api+web entirely and the wait
+    # loop below would time out on a container that was never started.
+    docker compose --profile app up -d --build
     echo "Waiting for the web container to come up (up to 90s)..."
     for i in $(seq 1 30); do
       if [ "$(docker inspect --format='{{.State.Health.Status}}' data-copilot-web 2>/dev/null)" = "healthy" ]; then

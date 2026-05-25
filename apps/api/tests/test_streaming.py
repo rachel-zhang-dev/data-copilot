@@ -315,6 +315,39 @@ def test_heartbeat_emitted_during_quiet_periods(client: TestClient) -> None:
     assert len(heartbeats) >= 1, f"expected ≥1 heartbeat, got body: {body!r}"
 
 
+def test_non_dict_diff_is_tolerated(client: TestClient) -> None:
+    """LangGraph occasionally surfaces ``None`` (or other non-mapping
+    values) as a chunk's diff — observed in the wild on the chitchat
+    branch where ``compact_history`` returns ``{}`` and a subsequent
+    terminal-state update arrives with ``diff=None``. The stream must
+    not 500 on this; treat it as an empty diff and keep going.
+
+    Regression test for the AttributeError raised by ``_phase_payload``
+    when it called ``.items()`` on ``None``.
+    """
+    g = client._graph  # type: ignore[attr-defined]
+    g.astream = _astream_factory([
+        {"classify_intent": {"intent": "chitchat"}},
+        {"small_talk": {"answer": "hi"}},
+        {"append_to_dialogue": {}},
+        {"compact_history": None},
+    ])
+    snap = MagicMock()
+    snap.values = {"answer": "hi", "turn_index": 1}
+    g.aget_state = AsyncMock(return_value=snap)
+
+    with client.stream("POST", "/ask/stream", json={"question": "hello"}) as r:
+        body = "".join(r.iter_text())
+    events = _parse_sse(body)
+
+    names = [name for name, _ in events]
+    assert names[-1] == "done", f"expected stream to finish, got {names}"
+    assert "error" not in names
+
+    phase_by_node = {data["node"]: data for name, data in events if name == "phase"}
+    assert phase_by_node["compact_history"]["diff"] == {}
+
+
 def test_resume_on_paused_thread_streams_continuation(client: TestClient) -> None:
     """Resume after pause: stream picks up at the interrupted node and
     runs to completion."""

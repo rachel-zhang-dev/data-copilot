@@ -104,7 +104,11 @@ services:
     ports:
       - "${WEB_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1"]
+      # Force IPv4 so BusyBox ``wget`` doesn't race the Node server's
+      # IPv6 binding (Next.js 15 + Node 22 sometimes binds the v4 and
+      # v6 listeners a few hundred ms apart, which the previous
+      # ``localhost`` form intermittently misses).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 3s
       retries: 5
