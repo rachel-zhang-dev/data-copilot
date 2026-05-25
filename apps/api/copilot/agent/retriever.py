@@ -137,7 +137,10 @@ def retrieve_schema_node(state: AgentState) -> dict[str, Any]:
 
     if not feature_flags.SCHEMA_RAG_ENABLED:
         log.info("retrieve_schema: SCHEMA_RAG disabled → full DDL fallback")
-        return {"relevant_schema": get_schema_ddl()}
+        return {
+            "relevant_schema": get_schema_ddl(),
+            "relevant_tables": list_tables(),
+        }
 
     settings = get_settings()
     question = state["question"]
@@ -172,19 +175,28 @@ def retrieve_schema_node(state: AgentState) -> dict[str, Any]:
 
         fk_graph = get_foreign_keys()
         expanded = expand_with_foreign_keys(seed, fk_graph, max_hops=1)
-        schema = get_table_ddl(sorted(expanded))
+        sorted_tables = sorted(expanded)
+        schema = get_table_ddl(sorted_tables)
 
         log.info(
             "retrieve_schema: named=%s top_k=%s expanded=%s",
             sorted(named),
             sorted(top_k),
-            sorted(expanded),
+            sorted_tables,
         )
-        return {"relevant_schema": schema, **cost_increment}
+        return {
+            "relevant_schema": schema,
+            "relevant_tables": sorted_tables,
+            **cost_increment,
+        }
 
     except Exception as exc:
         log.warning(
             "schema retrieval failed (%s); falling back to full DDL",
             exc,
         )
-        return {"relevant_schema": get_schema_ddl(), **cost_increment}
+        return {
+            "relevant_schema": get_schema_ddl(),
+            "relevant_tables": list_tables(),
+            **cost_increment,
+        }

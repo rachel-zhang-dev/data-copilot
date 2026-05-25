@@ -137,10 +137,12 @@ def explain_cost(
 _BUSINESS_TABLE_FILTER = (
     "table_schema = 'public' "
     "AND table_type = 'BASE TABLE' "
-    # Exclude tables created by the agent itself (week 3 added schema_embeddings)
-    # so they never appear in user-facing schema dumps or get retrieved as
-    # candidates for SQL generation.
-    "AND table_name NOT IN ('schema_embeddings')"
+    # Exclude tables created by the agent itself so they never appear in
+    # user-facing schema dumps or get retrieved as candidates for SQL
+    # generation. Week 3 added ``schema_embeddings``; Phase 1.1 (ADR
+    # 0016) added ``schema_profiles``. Both are operational state, not
+    # business data.
+    "AND table_name NOT IN ('schema_embeddings', 'schema_profiles')"
 )
 
 

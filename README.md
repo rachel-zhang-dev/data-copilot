@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-291%20passing-brightgreen.svg)](#testing)
-[![ADRs](https://img.shields.io/badge/ADRs-12-blue.svg)](docs/decisions/)
+[![ADRs](https://img.shields.io/badge/ADRs-13-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
@@ -48,9 +48,10 @@ You ask a business question. The agent retrieves the right slice of schema, writ
 
 | | |
 |---|---|
-| 🧠 **LangGraph state machine, 13 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
+| 🧠 **LangGraph state machine, 16 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
 | 🤝 **Multi-agent supervisor + analyst** | Rule-based supervisor orchestrates a SQL Specialist and an Analyst worker; bounded recursive drill-down loop (max 2 hops) |
 | 📚 **Schema-aware RAG** | BGE-M3 embeddings over pgvector + FK 1-hop expansion + named-table fast path + full-schema fallback |
+| 🛡️ **Honest about its limits** | A cached `schema_profiles` table powers a coverage gate that refuses "no conversion-rate data here" instead of hallucinating SQL, plus a schema-tour intent that answers "what data do you have?" with clickable starter questions ([ADR 0016](docs/decisions/0016-schema-profiling-and-coverage.md)) |
 | 🔍 **Comparative eval harness** | 32 hand-written cases × 3 A/B experiments (RAG on/off, self-heal on/off, dialogue context on/off); markdown reports archived per run |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
 | 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel |
@@ -465,6 +466,7 @@ Sentry, and the Redis-migration design.
 | 11 ✅ | Docker production image · Fly.io deploy · monitoring · Redis cache |
 | 12 ✅ | Polish, demo video, blog outline, simplified onboarding |
 | 12.5 ✅ | Multi-agent: supervisor + analyst pattern (bounded drill-down loop) |
+| 1.1 ✅ | Phase 1 / step 1 — schema profiling + coverage gate + schema explorer ([ADR 0016](docs/decisions/0016-schema-profiling-and-coverage.md)) |
 
 ## Project layout
 

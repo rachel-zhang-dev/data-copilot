@@ -138,6 +138,14 @@ export function ChatPanel() {
               turn={turn}
               isStreaming={isStreaming && turn === turns[turns.length - 1]}
               onResume={(d) => resumeTurn(turn.id, d)}
+              // Phase 1.1: refusal + schema-tour cards expose
+              // clickable suggested-question chips. Wiring them to
+              // ``startTurn`` keeps the same single source of truth
+              // for streaming state. Disabled while a turn is in
+              // flight so the user can't double-fire.
+              onSuggestionClick={
+                isStreaming ? undefined : (q) => startTurn(q)
+              }
             />
           ))
         )}

@@ -340,3 +340,78 @@
     sql_must_contain: [suppliers, products]
     sql_should_contain_any: [categories, join]
     row_count: { min: 0, max: 100 }
+
+# =========================================================================
+# unanswerable (5) — Phase 1.1 / ADR 0016. Northwind is a sales-and-
+# orders DB with no marketing-funnel, A/B-experiment, retention, ad-spend
+# or user-session data. The coverage gate should detect that and refuse.
+#
+# We assert ``expected_verdict: refuse``. With the gate ON (production
+# default), 5/5 should pass; with it OFF (a5 baseline), 0/5 should pass —
+# that's the whole point of the A/B.
+# =========================================================================
+
+- id: unanswerable-conversion-rate
+  question: Can you analyse why the conversion rate is dropping?
+  category: unanswerable
+  expects:
+    expected_verdict: refuse
+    sql_must_be_absent: true
+
+- id: unanswerable-signup-funnel
+  question: Show the signup funnel from visit to first order.
+  category: unanswerable
+  expects:
+    expected_verdict: refuse
+    sql_must_be_absent: true
+
+- id: unanswerable-ab-test
+  question: Compare the variant A and variant B groups for the homepage A/B test.
+  category: unanswerable
+  expects:
+    expected_verdict: refuse
+    sql_must_be_absent: true
+
+- id: unanswerable-retention
+  question: What is our 30-day user retention?
+  category: unanswerable
+  expects:
+    expected_verdict: refuse
+    sql_must_be_absent: true
+
+- id: unanswerable-ad-spend
+  question: Which marketing campaign drove the most revenue last quarter?
+  category: unanswerable
+  expects:
+    expected_verdict: refuse
+    sql_must_be_absent: true
+
+# =========================================================================
+# schema_explore (3) — Phase 1.1. Classifier should route to the
+# ``schema_explore`` branch and the explorer node should set
+# ``coverage.verdict = "explore"``. No SQL should be issued.
+# =========================================================================
+
+- id: schema-explore-what-data
+  question: What data do you have in this database?
+  category: schema_explore
+  expects:
+    expected_intent: schema_explore
+    expected_verdict: explore
+    sql_must_be_absent: true
+
+- id: schema-explore-tables
+  question: What tables are available?
+  category: schema_explore
+  expects:
+    expected_intent: schema_explore
+    expected_verdict: explore
+    sql_must_be_absent: true
+
+- id: schema-explore-questions-i-can-ask
+  question: What kinds of questions can I ask?
+  category: schema_explore
+  expects:
+    expected_intent: schema_explore
+    expected_verdict: explore
+    sql_must_be_absent: true

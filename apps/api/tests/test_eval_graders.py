@@ -16,7 +16,7 @@ def _case(expects: Expect, *, category: str = "count") -> CaseSpec:
 
 
 def _run(**kwargs) -> RunResult:  # type: ignore[no-untyped-def]
-    defaults = {
+    defaults: dict[str, object] = {
         "sql": None,
         "answer": "",
         "rows": None,
@@ -25,7 +25,52 @@ def _run(**kwargs) -> RunResult:  # type: ignore[no-untyped-def]
         "attempts": 1,
         "latency_ms": 100.0,
     }
-    return RunResult(**{**defaults, **kwargs})
+    return RunResult(**{**defaults, **kwargs})  # type: ignore[arg-type]
+
+
+# expected_verdict / expected_intent (Phase 1.1) ----------------------------
+
+
+def test_expected_verdict_passes_when_matching() -> None:
+    case = _case(Expect(expected_verdict="refuse"), category="unanswerable")
+    run = _run(coverage_verdict="refuse")
+    assert grade(case, run).passed
+
+
+def test_expected_verdict_fails_when_mismatched() -> None:
+    case = _case(Expect(expected_verdict="refuse"), category="unanswerable")
+    run = _run(coverage_verdict="ok")
+    g = grade(case, run)
+    assert not g.passed
+    assert any("verdict" in c.name for c in g.checks)
+
+
+def test_expected_verdict_skipped_when_none() -> None:
+    # No verdict expected → the field is silently ignored, no check
+    # gets appended, the existing assertions decide.
+    case = _case(Expect(sql_must_contain=("customers",)))
+    run = _run(sql="SELECT * FROM customers", coverage_verdict="refuse")
+    g = grade(case, run)
+    assert g.passed
+    assert all("verdict" not in c.name for c in g.checks)
+
+
+def test_expected_intent_passes_when_matching() -> None:
+    case = _case(
+        Expect(expected_intent="schema_explore"), category="schema_explore"
+    )
+    run = _run(intent="schema_explore", coverage_verdict="explore")
+    assert grade(case, run).passed
+
+
+def test_expected_intent_fails_on_wrong_route() -> None:
+    case = _case(
+        Expect(expected_intent="schema_explore"), category="schema_explore"
+    )
+    run = _run(intent="data")
+    g = grade(case, run)
+    assert not g.passed
+    assert any("intent" in c.name for c in g.checks)
 
 
 # sql_must_contain ----------------------------------------------------------

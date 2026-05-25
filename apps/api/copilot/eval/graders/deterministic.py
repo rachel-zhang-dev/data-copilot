@@ -61,6 +61,11 @@ class RunResult:
     attempts: int
     latency_ms: float
     total_tokens: int = 0
+    # Phase 1.1 — Coverage gate + intent. Default to ``None`` so the
+    # 32 existing cases that don't assert on them stay green without
+    # touching every constructor call.
+    intent: str | None = None
+    coverage_verdict: str | None = None
 
 
 def _check_sql_must_contain(expect: Expect, run: RunResult) -> list[CheckResult]:
@@ -165,6 +170,34 @@ def _check_row_count(expect: Expect, run: RunResult) -> list[CheckResult]:
     ]
 
 
+def _check_expected_verdict(expect: Expect, run: RunResult) -> list[CheckResult]:
+    if expect.expected_verdict is None:
+        return []
+    actual = run.coverage_verdict
+    ok = actual == expect.expected_verdict
+    return [
+        CheckResult(
+            f"verdict({expect.expected_verdict!r})",
+            ok,
+            "" if ok else f"got coverage_verdict={actual!r}",
+        )
+    ]
+
+
+def _check_expected_intent(expect: Expect, run: RunResult) -> list[CheckResult]:
+    if expect.expected_intent is None:
+        return []
+    actual = run.intent
+    ok = actual == expect.expected_intent
+    return [
+        CheckResult(
+            f"intent({expect.expected_intent!r})",
+            ok,
+            "" if ok else f"got intent={actual!r}",
+        )
+    ]
+
+
 def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     """Run all applicable assertions in sequence; result is AND of all."""
     checks: list[CheckResult] = []
@@ -175,6 +208,8 @@ def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     checks.extend(_check_answer_must_match(case.expects, run))
     checks.extend(_check_answer_must_contain_any(case.expects, run))
     checks.extend(_check_row_count(case.expects, run))
+    checks.extend(_check_expected_verdict(case.expects, run))
+    checks.extend(_check_expected_intent(case.expects, run))
 
     overall = all(c.passed for c in checks) if checks else True
     return GradeReport(case_id=case.id, passed=overall, checks=tuple(checks))

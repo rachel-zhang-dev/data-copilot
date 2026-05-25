@@ -55,6 +55,7 @@ def reset_per_turn_node(state: AgentState) -> dict[str, Any]:
     return {
         "intent": None,
         "relevant_schema": None,
+        "relevant_tables": None,
         "sql": None,
         "sql_result": None,
         "row_count": None,
@@ -64,6 +65,9 @@ def reset_per_turn_node(state: AgentState) -> dict[str, Any]:
         # never inherits "yes I already approved" from a previous turn.
         "pending_risk": None,
         "risk_decision": None,
+        # Phase 1.1: clear the coverage gate verdict so a refused turn
+        # doesn't bleed into the next turn's UI.
+        "coverage": None,
         # Week 8: clear the structured insight + chart so a follow-up
         # turn never echoes the previous answer's visualisation.
         "insight": None,

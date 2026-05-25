@@ -259,6 +259,16 @@ class AskResponse(BaseModel):
     # ANALYST_ENABLED is off or the supervisor short-circuited.
     analyst: dict[str, Any] | None = None
     drill_downs: list[dict[str, Any]] = []
+    # Phase 1.1 — schema coverage gate + explorer (ADR 0016).
+    # ``intent`` is the three-way classifier verdict; the FE uses it to
+    # choose between the data answer, the schema tour, and chitchat.
+    # ``coverage`` carries the structured payload for the two new
+    # branches: ``verdict="refuse"`` with bullets + suggested_questions
+    # for refused turns, or ``verdict="explore"`` with topics +
+    # suggested_questions for the schema tour. ``None`` on chitchat or
+    # plain data turns where the gate voted ``ok``.
+    intent: Literal["data", "chitchat", "schema_explore"] | None = None
+    coverage: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +394,8 @@ def _build_ask_response(
             cost=cost,
             analyst=None,
             drill_downs=[],
+            intent=result.get("intent"),
+            coverage=result.get("coverage"),
         )
 
     return AskResponse(
@@ -404,6 +416,8 @@ def _build_ask_response(
         cost=cost,
         analyst=analyst,
         drill_downs=drill_downs or [],
+        intent=result.get("intent"),
+        coverage=result.get("coverage"),
     )
 
 
@@ -549,7 +563,20 @@ def _sse_heartbeat() -> str:
 # Node names that are pure plumbing and add visual noise without telling
 # the user anything new. Streamed but tagged "internal" so the front-end
 # can hide them by default.
-_INTERNAL_NODES = frozenset({"reset_per_turn", "append_to_dialogue", "compact_history"})
+_INTERNAL_NODES = frozenset(
+    {
+        "reset_per_turn",
+        "append_to_dialogue",
+        "compact_history",
+        # Phase 1.1 — ``coverage_check`` is a pre-flight check that runs
+        # silently when the gate votes ``ok`` (the common case). The
+        # only diff it ever surfaces is the coverage envelope itself,
+        # which the front-end picks up via the AskResponse anyway. On
+        # ``refuse``, the user sees the downstream ``explain_uncovered``
+        # phase explicitly, which is NOT internal.
+        "coverage_check",
+    }
+)
 
 
 def _phase_payload(node: str, diff: Any) -> dict[str, Any]:
@@ -567,7 +594,7 @@ def _phase_payload(node: str, diff: Any) -> dict[str, Any]:
     whole stream.
     """
     keep = {"intent", "sql", "row_count", "error", "answer", "chart_kind",
-            "risk_decision", "turn_index"}
+            "risk_decision", "turn_index", "coverage"}
     if isinstance(diff, dict):
         safe_diff: dict[str, Any] = {k: v for k, v in diff.items() if k in keep}
     else:

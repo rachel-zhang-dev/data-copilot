@@ -224,6 +224,7 @@ async def _invoke_case(
     else:
         attempts_count = len(this_turn) + 1
 
+    coverage = state.get("coverage") or {}
     return RunResult(
         sql=state.get("sql"),
         answer=state.get("answer", ""),
@@ -233,6 +234,8 @@ async def _invoke_case(
         attempts=attempts_count,
         latency_ms=elapsed_ms,
         total_tokens=_estimate_tokens_from_messages(state),
+        intent=state.get("intent"),
+        coverage_verdict=coverage.get("verdict"),
     )
 
 
@@ -271,6 +274,7 @@ async def run_eval(
         dialogue_context_enabled=cfg.dialogue_context_enabled,
         retry_budget=cfg.retry_budget_override,
         analyst_enabled=cfg.analyst_enabled,
+        coverage_check_enabled=cfg.coverage_check_enabled,
     ):
         for case in cases:
             log.info("  [%s] %s — %s", cfg.label, case.id, case.category)

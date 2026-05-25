@@ -8,29 +8,60 @@ functions — has two practical benefits:
    harness templating) can import the strings instead of duplicating
    them.
 
-All prompts are written in English. The model itself happily answers
-Chinese questions because the user message is whatever the caller
-provided — we only constrain the *meta-instructions* given to the LLM.
+Meta-instructions are written in English. User-facing replies must
+match the language of the user's question; ``_LANGUAGE_DIRECTIVE`` is
+appended to every prompt whose output is shown to the user (i.e.
+``SUMMARIZE_SYSTEM``, ``SMALL_TALK_SYSTEM``, and the three Phase 1.1
+schema-coverage prompts). Internal prompts (intent classifier, SQL
+generator, history compactor) stay strictly English-controlled
+because the model's reply there is parsed, not displayed.
 """
 
 from __future__ import annotations
+
+
+_LANGUAGE_DIRECTIVE = """
+LANGUAGE — IMPORTANT:
+  - Respond in the SAME language as the user's question.
+  - If the question is in Chinese (中文), write every string field in
+    Chinese: headline, bullets, topic names, summaries, reasons,
+    suggested_questions, missing_concepts.
+  - If the question is in English, write every field in English.
+  - Match the user's language CONSISTENTLY across ALL string fields,
+    not just one or two. Mixed-language replies are not acceptable.
+  - Numbers, table names, and column names stay verbatim (they are
+    identifiers, not prose).
+"""
+"""Appended to every user-facing prompt below. Centralised so a future
+language tweak only touches one place."""
 
 CLASSIFY_INTENT_SYSTEM = """\
 You are an intent classifier for a database assistant.
 
 Reply with exactly ONE WORD, lowercase, no punctuation, no explanation:
 
-- "data"     if the user is asking about data in the database
-             (counts, lists, filters, aggregations, joins, "how many",
-              "show me", "what is the average", etc.)
-- "chitchat" if the user is greeting you, asking who/what you are,
-             or otherwise not asking a data question.
+- "data"     - the user is asking about data IN the database
+               (counts, lists, filters, aggregations, joins, "how many",
+                "show me", "what is the average", etc.)
+- "chitchat" - the user is greeting you, asking who/what you are,
+                or otherwise not asking a question that needs data.
+- "explore"  - the user is asking ABOUT the database itself: what tables
+                exist, what kinds of data are available, what questions
+                they could ask. This is meta — they are NOT asking for
+                a specific value, they want a tour.
 
 Examples:
-  user: "How many customers are there?"        -> data
-  user: "List products under $10"              -> data
-  user: "Hello!"                               -> chitchat
-  user: "What can you do?"                     -> chitchat
+  "How many customers are there?"         -> data
+  "List products under $10"               -> data
+  "Top 5 products by revenue"             -> data
+  "Hello!"                                -> chitchat
+  "What can you do?"                      -> chitchat
+  "Thanks!"                               -> chitchat
+  "What data do you have?"                -> explore
+  "Show me the schema"                    -> explore
+  "What tables are in this database?"     -> explore
+  "What kinds of questions can I ask?"    -> explore
+  "你有哪些数据"                          -> explore
 """
 
 
@@ -109,7 +140,7 @@ Rules:
   - If the result is empty, set headline to a polite "no results"
     sentence and leave the arrays empty.
   - Output ONLY the JSON object; no surrounding text or fences.
-"""
+""" + _LANGUAGE_DIRECTIVE
 
 
 SUMMARIZE_USER_TEMPLATE = """\
@@ -133,7 +164,7 @@ questions by writing and running SQL.
 Reply to greetings, small talk, and "what can you do" questions with
 a friendly, brief (1-2 sentences) answer. Encourage the user to ask
 a data question. Do not pretend to have already run any query.
-"""
+""" + _LANGUAGE_DIRECTIVE
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +239,155 @@ Conversation to summarise:
 
 Summary:
 """
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.1 — schema coverage gate + schema explorer (ADR 0016)
+# ---------------------------------------------------------------------------
+
+COVERAGE_CHECK_SYSTEM = """\
+You are a schema-coverage gatekeeper for a SQL assistant.
+
+You will be given:
+  1. A user question (natural language).
+  2. A profile of the most relevant tables (column names, types, row
+     counts, NULL ratios, distinct counts, sample values, FK targets,
+     and column comments).
+
+Your job: decide whether the data in these tables can plausibly answer
+the question. Reply with ONE JSON object — no surrounding prose, no
+markdown fences — matching this schema:
+
+{
+  "verdict": "ok" | "refuse",
+  "reason": str,                          # one short sentence
+  "missing_concepts": [str, ...],         # concepts the question
+                                          #   mentions that you cannot
+                                          #   find in the schema.
+                                          #   Empty list when verdict="ok".
+  "suggested_questions": [str, ...]       # 0-3 example questions the
+                                          #   user could ask INSTEAD,
+                                          #   grounded in this schema.
+                                          #   Empty list when verdict="ok".
+}
+
+Rules:
+  - DEFAULT TO "ok". Refuse ONLY when the question clearly requires a
+    concept that is absent from the schema (e.g. "conversion rate" or
+    "funnel" on a sales/orders DB; "campaigns" on a DB with only
+    products and customers). When in doubt, return "ok" and let the
+    SQL writer try.
+  - The presence of vaguely-related columns (e.g. a "discount" column
+    when asked about "promotions") is enough to vote "ok" — the SQL
+    writer can still surface partial answers.
+  - "missing_concepts" should be 1-3 specific phrases.
+  - "suggested_questions" should be answerable BY THIS schema and
+    related to the user's apparent goal.
+  - Output ONLY the JSON object. No commentary.
+""" + _LANGUAGE_DIRECTIVE
+
+
+COVERAGE_CHECK_USER_TEMPLATE = """\
+Schema profile for the most relevant tables:
+
+{profile}
+
+User question:
+{question}
+
+JSON verdict:
+"""
+
+
+EXPLORE_SCHEMA_SYSTEM = """\
+You are a database tour guide.
+
+You will be given a profile of every table in the database. Produce a
+short, scannable overview grouped by topic, plus 3-5 example questions
+the user could ask. Reply with ONE JSON object — no surrounding prose,
+no markdown fences — matching this schema:
+
+{
+  "headline": str,                        # one sentence summary (<= 200 chars)
+  "topics": [
+    {
+      "name": str,                        # short title, e.g. "Customers & Sales"
+      "tables": [str, ...],               # 1-5 table names belonging to this topic
+      "summary": str                      # 1-2 sentences describing what's here
+    },
+    ...
+  ],
+  "sample_questions": [str, ...]          # 3-5 concrete questions you could ANSWER
+                                          # with this schema.
+}
+
+Rules:
+  - Group tables that frequently JOIN together into one topic.
+  - "tables" must be exact, lowercase names from the profile.
+    These are identifiers — keep them verbatim regardless of language.
+  - "sample_questions" must be answerable with the data shown. Avoid
+    vague questions; prefer ones with specific numbers or filters.
+  - Output ONLY the JSON object. No commentary.
+""" + _LANGUAGE_DIRECTIVE
+
+
+EXPLORE_SCHEMA_USER_TEMPLATE = """\
+Full schema profile:
+
+{profile}
+
+User asked:
+{question}
+
+JSON tour:
+"""
+
+
+EXPLAIN_UNCOVERED_SYSTEM = """\
+You are a polite SQL assistant explaining why you cannot answer a
+question. You will be given the user's question, a short reason, and
+a list of missing concepts.
+
+Reply with ONE JSON object — no surrounding prose, no markdown
+fences — matching this schema:
+
+{
+  "headline": str,                        # one sentence; admit the gap
+                                          # honestly without apologising
+                                          # excessively. <= 200 chars.
+  "bullets": [str, ...],                  # 0-3 short lines explaining
+                                          # what concepts are missing
+                                          # and what data IS available.
+  "suggested_questions": [str, ...]       # 0-3 concrete alternative
+                                          # questions. May echo the
+                                          # input verbatim or refine.
+}
+
+Rules:
+  - Be direct and helpful. Do not say "I'm sorry, I cannot help with
+    that." Say "This database does not have X, but it does have Y."
+  - Suggested questions must be answerable by the schema profile you
+    were given.
+  - Output ONLY the JSON object.
+""" + _LANGUAGE_DIRECTIVE
+
+
+EXPLAIN_UNCOVERED_USER_TEMPLATE = """\
+User question:
+{question}
+
+Why I cannot answer:
+{reason}
+
+Missing concepts:
+{missing_concepts}
+
+Suggested follow-ups (already proposed by the gate, you may keep or refine):
+{suggested_questions}
+
+Schema profile for the most relevant tables:
+{profile}
+
+JSON response:
+"""
+

@@ -146,6 +146,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------- Phase 1.1: schema coverage gate (ADR 0016) ----------
+    coverage_check_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True, every data-intent turn runs through "
+            "``coverage_check_node`` before SQL generation. The node "
+            "asks the LLM whether the retrieved schema can plausibly "
+            "answer the question; on ``refuse`` the graph diverts to "
+            "``explain_uncovered_node`` and never writes SQL. Disable "
+            "to fall back to the pre-Phase-1.1 behaviour (always "
+            "generate SQL) — used by the eval baseline."
+        ),
+    )
+
     # ---------- Visualisation (week 8) ----------
     chart_max_rows: int = Field(
         default=50,

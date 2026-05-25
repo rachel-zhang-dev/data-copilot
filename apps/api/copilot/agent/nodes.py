@@ -178,13 +178,17 @@ def _llm_cost(response: AIMessage, prompt_text: str) -> CostBreakdown:
 
 
 def classify_intent_node(state: AgentState) -> dict[str, Any]:
-    """Decide whether the user is asking a data question or just chatting.
+    """Decide whether the user is asking a data question, chatting, or
+    exploring the schema.
 
-    We use a tiny prompt with ``temperature=0`` and parse the first
-    word of the reply. Anything we do not recognise falls back to
-    ``data`` — better to attempt SQL than to refuse politely.
+    Three-way classifier (Phase 1.1 added the ``schema_explore`` slot;
+    the prompt emits ``explore`` as the one-word answer, which we map
+    onto the longer ``Intent`` literal here). We use a tiny prompt with
+    ``temperature=0`` and parse the first word of the reply. Anything
+    we do not recognise falls back to ``data`` — better to attempt SQL
+    than to refuse politely.
     """
-    llm = get_llm(temperature=0.0, max_tokens=4)
+    llm = get_llm(temperature=0.0, max_tokens=6)
     response = llm.invoke(
         [
             SystemMessage(content=CLASSIFY_INTENT_SYSTEM),
@@ -193,8 +197,14 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
     )
     raw = _message_text(response).strip().lower().split()
     intent: Intent = "data"
-    if raw and raw[0] in {"data", "chitchat"}:
-        intent = raw[0]  # type: ignore[assignment]
+    if raw:
+        first = raw[0].strip(".,!?:;\"'")
+        if first == "data":
+            intent = "data"
+        elif first == "chitchat":
+            intent = "chitchat"
+        elif first in {"explore", "schema_explore", "schema-explore"}:
+            intent = "schema_explore"
     log.info("classify_intent -> %s", intent)
     return {"intent": intent, "cost": _llm_cost(response, state["question"])}
 
@@ -473,8 +483,18 @@ def finalize_error_node(state: AgentState) -> dict[str, Any]:
 
 
 def route_after_classify(state: AgentState) -> str:
-    """Pick the next node based on the classifier's verdict."""
-    return "small_talk" if state.get("intent") == "chitchat" else "generate_sql"
+    """Pick the next node based on the classifier's verdict.
+
+    Phase 1.1 added a third branch: ``schema_explore`` routes to a
+    dedicated node that produces a tour of the cached profile rather
+    than attempting SQL or canned chitchat.
+    """
+    intent = state.get("intent")
+    if intent == "chitchat":
+        return "small_talk"
+    if intent == "schema_explore":
+        return "explore_schema"
+    return "generate_sql"
 
 
 def route_after_validate(state: AgentState) -> str:

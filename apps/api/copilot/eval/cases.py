@@ -62,14 +62,25 @@ Category = Literal[
     "destructive",
     "ambiguous",
     "expensive",
+    # Phase 1.1 / ADR 0016 — schema coverage gate + explorer.
+    # ``unanswerable``  : questions whose concept isn't in the schema;
+    #                     gate should return verdict="refuse".
+    # ``schema_explore``: questions about the schema itself; classifier
+    #                     should return intent="schema_explore".
+    "unanswerable",
+    "schema_explore",
 ]
-"""The nine buckets we slice metrics by. Adding a new bucket means
-both updating this Literal AND adding cases to cases.yaml.
+"""The buckets we slice metrics by. Adding a new bucket means both
+updating this Literal AND adding cases to cases.yaml.
 
 ``expensive`` (week 7) covers questions that should produce SQL with a
 Postgres planner cost above the HITL threshold. The eval auto-approves
 the resulting pause so the rest of the pipeline can be graded; the
-pause behaviour itself is unit-tested in ``tests/test_risk.py``."""
+pause behaviour itself is unit-tested in ``tests/test_risk.py``.
+
+``unanswerable`` and ``schema_explore`` (Phase 1.1) feed the coverage
+gate A/B. The grader checks ``expected_verdict`` / ``expected_intent``
+on the resulting run."""
 
 _CATEGORIES: set[str] = set(get_args(Category))
 
@@ -116,6 +127,18 @@ class Expect:
     answer_must_contain_any: tuple[str, ...] = ()
     row_count: RowCountRange | None = None
 
+    # Phase 1.1 / ADR 0016 — coverage gate + explorer assertions.
+    expected_verdict: Literal["ok", "refuse", "explore"] | None = None
+    """``coverage.verdict`` the gate is expected to return for this
+    case. ``None`` skips the assertion (the default for existing
+    cases). Pair with ``unanswerable`` / ``schema_explore`` categories."""
+
+    expected_intent: Literal["data", "chitchat", "schema_explore"] | None = None
+    """``intent`` the three-way classifier is expected to return.
+    ``None`` skips the assertion. Useful on ``schema_explore`` cases
+    where we want to lock in that classify_intent routed correctly,
+    independently of whatever the downstream node decided."""
+
 
 @dataclass(frozen=True)
 class CaseSpec:
@@ -141,7 +164,13 @@ _VALID_EXPECT_KEYS = {
     "answer_must_match",
     "answer_must_contain_any",
     "row_count",
+    # Phase 1.1
+    "expected_verdict",
+    "expected_intent",
 }
+
+_VALID_VERDICTS = {"ok", "refuse", "explore"}
+_VALID_INTENTS = {"data", "chitchat", "schema_explore"}
 
 
 def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
@@ -174,6 +203,19 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
                 f"case {case_id!r}: answer_must_match is not valid regex: {exc}"
             ) from exc
 
+    expected_verdict = raw.get("expected_verdict")
+    if expected_verdict is not None and expected_verdict not in _VALID_VERDICTS:
+        raise ValueError(
+            f"case {case_id!r}: expected_verdict must be one of "
+            f"{sorted(_VALID_VERDICTS)}, got {expected_verdict!r}"
+        )
+    expected_intent = raw.get("expected_intent")
+    if expected_intent is not None and expected_intent not in _VALID_INTENTS:
+        raise ValueError(
+            f"case {case_id!r}: expected_intent must be one of "
+            f"{sorted(_VALID_INTENTS)}, got {expected_intent!r}"
+        )
+
     expect = Expect(
         sql_must_contain=tuple(raw.get("sql_must_contain", []) or []),
         sql_must_not_contain=tuple(raw.get("sql_must_not_contain", []) or []),
@@ -182,6 +224,8 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         answer_must_match=answer_match,
         answer_must_contain_any=tuple(raw.get("answer_must_contain_any", []) or []),
         row_count=rc,
+        expected_verdict=expected_verdict,
+        expected_intent=expected_intent,
     )
 
     has_any = (
@@ -192,6 +236,8 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         or expect.answer_must_match
         or expect.answer_must_contain_any
         or expect.row_count is not None
+        or expect.expected_verdict is not None
+        or expect.expected_intent is not None
     )
     if not has_any:
         raise ValueError(

@@ -7,47 +7,61 @@ five buckets (kpi / bar / line / grouped_bar / table) and emits a
 Vega-Lite v5 spec for the three "real chart" kinds. See ADR 0009 for
 the heuristic + fail-soft design.
 
+Phase 1.1 (ADR 0016) added a three-way intent split and an inline
+coverage gate:
+
+* New ``schema_explore`` intent → ``explore_schema`` node, which
+  renders the cached ``schema_profiles`` as a topic-grouped tour.
+* The data branch now passes through ``coverage_check`` between
+  ``retrieve_schema`` and ``generate_sql``. On ``refuse`` it diverts
+  to ``explain_uncovered`` — the agent never writes SQL it can't
+  justify against the schema.
+
 Persistence is wired through ``compile(checkpointer=...)``: each
 ``ainvoke`` is keyed by ``thread_id == conversation_id`` so the
 agent automatically loads the prior state and saves the diff after
 every node, including across an interrupt-resume gap.
 
-Graph (week 8)::
+Graph (Phase 1.1)::
 
-         reset_per_turn
-                |
-         classify_intent
-              /        \\
-        chitchat        data
-            |             |
-       small_talk    retrieve_schema
-            |             |
-            |        generate_sql <----+
-            |             |            |retry
-            |        validate_sql -----+
-            |             |            |
-            |        check_risk        |
-            |          /     \\        |
-            |   await_confirm  \\      |
-            |       |  \\       \\     |
-            |   approved rejected      |
-            |       |       \\         |
-            |        \\       \\        |
-            |        execute_sql ------+
-            |             |
-            |       summarize_result
-            |             |
-            |         visualize
-            |             |
-            |        finalize_error
-            |             |
-            +------+------+
-                   |
-            append_to_dialogue
-                   |
-            compact_history
-                   |
-                  END
+                 reset_per_turn
+                       |
+                 classify_intent
+              /        |        \\
+       chitchat   schema_explore   data
+          |            |            |
+    small_talk   explore_schema  retrieve_schema
+          |            |            |
+          |            |       coverage_check
+          |            |        /         \\
+          |            |   refuse           ok
+          |            |     |              |
+          |            |  explain_uncovered  generate_sql <----+
+          |            |     |              |                 |retry
+          |            |     |        validate_sql -----------+
+          |            |     |              |                 |
+          |            |     |          check_risk            |
+          |            |     |           /      \\            |
+          |            |     |  await_confirm    \\           |
+          |            |     |     |   \\           \\        |
+          |            |     | approved rejected               |
+          |            |     |     |       \\                  |
+          |            |     |     |        \\                  |
+          |            |     |  execute_sql ------------------+
+          |            |     |     |
+          |            |     |  summarize_result
+          |            |     |     |
+          |            |     |  visualize
+          |            |     |     |
+          |            |     |  finalize_error
+          |            |     |     |
+          +----+-------+-----+-----+
+                       |
+                append_to_dialogue
+                       |
+                compact_history
+                       |
+                      END
 """
 
 from __future__ import annotations
@@ -59,7 +73,13 @@ from langgraph.graph.state import CompiledStateGraph
 
 from copilot.agent import nodes
 from copilot.agent.compaction import compact_history_node
+from copilot.agent.coverage import (
+    coverage_check_node,
+    explain_uncovered_node,
+    route_after_coverage,
+)
 from copilot.agent.dialogue import append_to_dialogue_node, reset_per_turn_node
+from copilot.agent.explore import explore_schema_node
 from copilot.agent.retriever import retrieve_schema_node
 from copilot.agent.risk import (
     await_confirmation_node,
@@ -88,7 +108,10 @@ def build_graph(
     workflow.add_node("reset_per_turn", reset_per_turn_node)
     workflow.add_node("classify_intent", nodes.classify_intent_node)
     workflow.add_node("small_talk", nodes.small_talk_node)
+    workflow.add_node("explore_schema", explore_schema_node)
     workflow.add_node("retrieve_schema", retrieve_schema_node)
+    workflow.add_node("coverage_check", coverage_check_node)
+    workflow.add_node("explain_uncovered", explain_uncovered_node)
     workflow.add_node("generate_sql", nodes.generate_sql_node)
     workflow.add_node("validate_sql", nodes.validate_sql_node)
     workflow.add_node("check_risk", check_risk_node)
@@ -104,17 +127,31 @@ def build_graph(
     workflow.add_edge(START, "reset_per_turn")
     workflow.add_edge("reset_per_turn", "classify_intent")
 
-    # Intent fan-out: chitchat short-circuits past SQL generation.
+    # Intent fan-out (Phase 1.1): three branches. chitchat short-
+    # circuits past SQL generation; schema_explore goes to a tour
+    # node; data fires the retrieve → coverage_check pipeline.
     workflow.add_conditional_edges(
         "classify_intent",
         nodes.route_after_classify,
         {
             "small_talk": "small_talk",
+            "explore_schema": "explore_schema",
             "generate_sql": "retrieve_schema",
         },
     )
 
-    workflow.add_edge("retrieve_schema", "generate_sql")
+    # Data branch: schema retrieval → coverage gate → SQL writing
+    # (Phase 1.1 inserts coverage_check between the two; on refuse,
+    # the graph diverts to explain_uncovered and skips SQL entirely).
+    workflow.add_edge("retrieve_schema", "coverage_check")
+    workflow.add_conditional_edges(
+        "coverage_check",
+        route_after_coverage,
+        {
+            "generate_sql": "generate_sql",
+            "explain_uncovered": "explain_uncovered",
+        },
+    )
     workflow.add_edge("generate_sql", "validate_sql")
 
     # After validation: success -> check_risk (week 7 inserts a risk
@@ -166,11 +203,14 @@ def build_graph(
     )
 
     # Week 8 inserts ``visualize`` only on the data-success path —
-    # chitchat / terminal-error don't have rows to chart. All three
-    # eventually funnel into the bookkeeping pair (append_to_dialogue,
-    # compact_history) before END, so dialogue is updated regardless
-    # of which branch produced the answer.
+    # chitchat / terminal-error / refused / explored branches don't
+    # have rows to chart. ALL terminal branches funnel into the
+    # bookkeeping pair (append_to_dialogue, compact_history) before
+    # END, so dialogue is updated regardless of which branch produced
+    # the answer (Phase 1.1 adds explore_schema + explain_uncovered).
     workflow.add_edge("small_talk", "append_to_dialogue")
+    workflow.add_edge("explore_schema", "append_to_dialogue")
+    workflow.add_edge("explain_uncovered", "append_to_dialogue")
     workflow.add_edge("summarize_result", "visualize")
     workflow.add_edge("visualize", "append_to_dialogue")
     workflow.add_edge("finalize_error", "append_to_dialogue")

@@ -45,6 +45,13 @@ class ExperimentConfig:
     verify ``success_rate`` stays flat (the Analyst is additive, not
     gating)."""
 
+    coverage_check_enabled: bool = True
+    """When False, ``coverage_check_node`` is skipped — the data
+    branch behaves exactly like it did before Phase 1.1 (always
+    generate SQL, never refuse). Used by A5 (the coverage_check A/B)
+    to quantify the gate's impact on ``unanswerable`` / ``schema_explore``
+    cases without harming the success rate on the original 32."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -90,4 +97,15 @@ WITHOUT_ANALYST = ExperimentConfig(
     analyst_enabled=False,
     notes="Supervisor short-circuits after SQL; no Analyst follow-ups or drill-downs.",
     extra_tags=("a4", "analyst_off"),
+)
+
+WITHOUT_COVERAGE_CHECK = ExperimentConfig(
+    label="coverage_check_off",
+    coverage_check_enabled=False,
+    notes=(
+        "Phase 1.1 gate disabled — data branch always proceeds to "
+        "generate_sql. unanswerable / schema_explore categories will "
+        "score badly; existing 32 cases should stay green."
+    ),
+    extra_tags=("a5", "coverage_check_off"),
 )

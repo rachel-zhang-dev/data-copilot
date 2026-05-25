@@ -40,6 +40,11 @@ DIALOGUE_CONTEXT_ENABLED: bool = True
 # fourth A/B (``analyst_enabled``).
 ANALYST_ENABLED: bool = True
 
+# Phase 1.1 — schema coverage gate (ADR 0016). When False, the data
+# branch skips ``coverage_check_node`` entirely (pre-Phase-1.1
+# behaviour: always generate SQL). The fifth A/B flips this.
+COVERAGE_CHECK_ENABLED: bool = True
+
 
 @contextmanager
 def override(
@@ -48,18 +53,21 @@ def override(
     dialogue_context_enabled: bool | None = None,
     retry_budget: dict[ErrorClass, int] | None = None,
     analyst_enabled: bool | None = None,
+    coverage_check_enabled: bool | None = None,
 ) -> Iterator[None]:
     """Flip flags for the duration of the ``with`` block.
 
     Any argument left as ``None`` keeps its current value. On exit
-    (including via exception) all four flags are restored, even if
-    only some were set.
+    (including via exception) all flags are restored, even if only
+    some were set.
     """
     global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED, ANALYST_ENABLED
+    global COVERAGE_CHECK_ENABLED
 
     prev_rag = SCHEMA_RAG_ENABLED
     prev_dlg = DIALOGUE_CONTEXT_ENABLED
     prev_analyst = ANALYST_ENABLED
+    prev_coverage = COVERAGE_CHECK_ENABLED
     prev_budget = dict(_nodes_mod.RETRY_BUDGET)
 
     if schema_rag_enabled is not None:
@@ -68,6 +76,8 @@ def override(
         DIALOGUE_CONTEXT_ENABLED = dialogue_context_enabled
     if analyst_enabled is not None:
         ANALYST_ENABLED = analyst_enabled
+    if coverage_check_enabled is not None:
+        COVERAGE_CHECK_ENABLED = coverage_check_enabled
     if retry_budget is not None:
         # Mutate in place so existing references to the dict (e.g. in
         # tests that imported the module attribute) see the change.
@@ -80,5 +90,6 @@ def override(
         SCHEMA_RAG_ENABLED = prev_rag
         DIALOGUE_CONTEXT_ENABLED = prev_dlg
         ANALYST_ENABLED = prev_analyst
+        COVERAGE_CHECK_ENABLED = prev_coverage
         _nodes_mod.RETRY_BUDGET.clear()
         _nodes_mod.RETRY_BUDGET.update(prev_budget)
