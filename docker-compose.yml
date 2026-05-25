@@ -1,4 +1,31 @@
+# Local development stack — one command to bring up everything.
+#
+#   docker compose up                # foreground, all three services
+#   docker compose up -d              # detached
+#   docker compose up postgres        # just the DB (legacy week-2 mode)
+#   docker compose up postgres api    # DB + API only, skip the frontend
+#
+# The ``api`` and ``web`` services are gated behind a Compose **profile**
+# so that ``./scripts/dev.sh up`` (which only wants Postgres) keeps
+# behaving like it always did. Compose auto-enables the ``app`` profile
+# when no service is named explicitly, so plain ``docker compose up``
+# brings the full stack.
+#
+# Required env (committed in ``.env.example``, ignore ``.env`` from git):
+#
+#   DEEPSEEK_API_KEY      — chat LLM
+#   SILICONFLOW_API_KEY   — BGE-M3 embeddings
+#   LANGSMITH_API_KEY     — optional, traces (week 5+)
+#
+# Everything else has a sensible default and is overridable via ``.env``.
+
+x-default-profiles: &default-profiles ["app"]
+
 services:
+
+  # -------------------------------------------------------------------------
+  # Postgres + pgvector — always on, no profile so legacy commands work.
+  # -------------------------------------------------------------------------
   postgres:
     image: pgvector/pgvector:pg16
     container_name: data-copilot-postgres
@@ -10,12 +37,78 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Seed scripts run only on first init (when the volume is empty);
+      # subsequent ``docker compose up`` reuses the persisted data.
       - ./data/seed:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-copilot}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # FastAPI backend — built from apps/api/Dockerfile.
+  # -------------------------------------------------------------------------
+  api:
+    profiles: *default-profiles
+    build:
+      context: .                             # repo root, so the Dockerfile
+      dockerfile: apps/api/Dockerfile        # can copy pyproject + apps/api/
+    container_name: data-copilot-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Inside the compose network the DB hostname is the service name.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-copilot}:${POSTGRES_PASSWORD:-copilot_dev_pwd}@postgres:5432/${POSTGRES_DB:-northwind}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:?SILICONFLOW_API_KEY is required}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-true}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-data-copilot-dev}
+      # Allow the web container's origin through CORS without forcing
+      # the user to manually edit settings.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://web:3000}
+      # Optional Redis — leave empty for in-memory cache (week-9 default).
+      REDIS_URL: ${REDIS_URL:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Next.js frontend — built from apps/web/Dockerfile.
+  # -------------------------------------------------------------------------
+  web:
+    profiles: *default-profiles
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: data-copilot-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # The Next.js Route Handlers proxy SSE / JSON to this URL. From
+      # inside the compose network we reach the API by service name;
+      # from the browser it's still the host-mapped port (handled by
+      # the Route Handler running server-side in the web container).
+      API_BASE_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
 volumes:

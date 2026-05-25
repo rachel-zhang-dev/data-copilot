@@ -1,96 +1,172 @@
 # Data Copilot
 
-> An enterprise-grade **Text-to-SQL agent** with self-healing, schema-aware retrieval, and full observability.
-> Built with **LangGraph**, **FastAPI**, **Next.js**, and **PostgreSQL + pgvector**.
+> Production-grade Text-to-SQL agent with **self-healing**, **schema-aware retrieval**, **human-in-the-loop confirmation**, **multi-turn dialogue**, and **streaming UI**. Built with LangGraph + FastAPI + Next.js, deployed on Fly.io.
 
-[![Status](https://img.shields.io/badge/status-WIP-orange.svg)](#roadmap)
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-291%20passing-brightgreen.svg)](#testing)
+[![ADRs](https://img.shields.io/badge/ADRs-12-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
+🎬 **[2-min walkthrough](docs/demo.gif)** &nbsp;·&nbsp;
+📐 **[Architecture](docs/architecture.md)** &nbsp;·&nbsp;
+📋 **[ADRs](docs/decisions/)** &nbsp;·&nbsp;
+🧪 **[Eval reports](docs/eval/)**
+
+<!-- Hero asset: replace docs/demo.gif with a recorded session.
+     Suggested flow: ask a JOIN question → watch SSE phases stream
+     → see the bar chart render → ask a follow-up. -->
+![Data Copilot demo](docs/demo.gif)
 
 ---
 
-## Why this project
+## What it does
 
-Every analytics team has the same bottleneck: **business users wait days for the data team to write ad-hoc SQL**. Modern LLMs can close that gap, but production text-to-SQL is hard — schemas are huge, queries are wrong on the first try, and stakeholders need explanations, not just rows.
+You ask a business question. The agent retrieves the right slice of schema, writes safe SQL, runs it, and streams back a chart + structured insight + the SQL it ran. If the SQL fails, it self-heals; if the SQL is expensive, it pauses for your approval.
 
-`data-copilot` is a portfolio-grade exploration of how to build that system *properly*: not a notebook demo, but a service with retrieval, validation, self-healing, evaluation, and traceable observability.
-
-## Features
-
-- 🧠 **LangGraph state machine** — multi-step reasoning with explicit retry / human-in-the-loop nodes
-- 📚 **Schema-aware RAG** — embeds tables and columns; only the relevant slice of the schema is sent to the LLM
-- 🔧 **Self-healing SQL** — when execution fails, the agent inspects the error and rewrites the query
-- 📊 **Visualisation generation** — model picks chart type and config based on result shape
-- 🔍 **Full observability** — every run traced in [LangSmith](https://smith.langchain.com/)
-- ✅ **Evaluation harness** — fixed eval set + LLM-as-judge + RAGAS metrics, tracked per release
-- 💸 **Cost-aware** — primary LLM is DeepSeek (~10× cheaper than GPT-4o); designed to swap providers via a single env var
-- 🔒 **Safety** — query whitelist, row-level filters, automatic `LIMIT` injection
-
-## Architecture
-
-```mermaid
-flowchart LR
-    UI[Next.js UI] -->|HTTP| API[FastAPI]
-    API --> AG[LangGraph Agent]
-    AG -->|retrieve| VS[(pgvector<br/>schema embeddings)]
-    AG -->|execute| DB[(PostgreSQL<br/>business data)]
-    AG -->|prompt| LLM[DeepSeek / Claude]
-    AG -. trace .-> LS[LangSmith]
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  "Which 5 products have the highest total revenue?"             │
+└─────────────────────────────────────────────────────────────────┘
+        │
+        ▼  schema RAG (week 3)        + 1-hop FK expansion
+        │  retrieves:  products, order_details, orders, categories
+        ▼
+        │  generate SQL (week 2-4)    + self-heal on failure
+        │  ─►  SELECT p.product_name, SUM(od.unit_price * od.quantity) ...
+        ▼
+        │  risk check (week 7)        EXPLAIN cost: 280 → ok
+        ▼
+        │  execute → summarise        structured insight (week 8)
+        ▼
+        │  visualise (week 8)         Vega-Lite bar spec
+        ▼
+   answer + chart + cost — all streamed via SSE (week 10)
 ```
 
-Full diagram and design notes in [`docs/architecture.md`](docs/architecture.md).
-A line-by-line tour of the source lives in [`docs/code-walkthrough.md`](docs/code-walkthrough.md).
-Major decisions are recorded as [ADRs](docs/decisions/).
+## Highlights
 
-## Tech stack
+| | |
+|---|---|
+| 🧠 **LangGraph state machine, 13 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
+| 📚 **Schema-aware RAG** | BGE-M3 embeddings over pgvector + FK 1-hop expansion + named-table fast path + full-schema fallback |
+| 🔍 **Comparative eval harness** | 32 hand-written cases × 3 A/B experiments (RAG on/off, self-heal on/off, dialogue context on/off); markdown reports archived per run |
+| 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
+| 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel |
+| 🚀 **Production-deploy ready** | Multi-stage non-root Dockerfiles, two Fly.io apps, Prometheus `/metrics`, structured JSON logs, LangSmith traces |
+| 📋 **12 ADRs** | Every major decision (and the alternatives explicitly rejected) is recorded under [`docs/decisions/`](docs/decisions/) |
 
-| Layer | Choice |
-|-------|--------|
-| Agent runtime | **LangGraph** + **LangChain** |
-| LLM | DeepSeek-Chat (primary) · GPT-4o-mini · Claude Sonnet (benchmarked) |
-| Embeddings | **SiliconFlow `BAAI/bge-m3`** (free tier) — swap-able via env var |
-| Backend | FastAPI · Pydantic v2 · Python 3.11 |
-| Database & vectors | PostgreSQL 16 · `pgvector` |
-| Frontend | Next.js 15 · TypeScript · Tailwind · shadcn/ui |
-| Tooling | `uv` · `ruff` · `mypy` · `pytest` |
-| Observability | LangSmith |
-| Container & deploy | Docker Compose → Fly.io |
-
-## Quick start
+## Run in 60 seconds
 
 ```bash
-# 1. Clone and configure
 git clone https://github.com/rachel-zhang-dev/data-copilot.git
 cd data-copilot
-cp .env.example .env  # then fill in your API keys
-
-# 2. Install dependencies (uv = fast package manager)
-uv sync --all-extras
-
-# 3. Boot Postgres
-./scripts/dev.sh up
-
-# 4. Run the API
-./scripts/dev.sh api
-# → http://localhost:8000/docs
-
-# 5. Quick agent ping (no UI needed)
-./scripts/dev.sh ask "Hello, who are you?"
-
-# 6. Try a real data question (week 2 onwards)
-./scripts/dev.sh ask "How many customers are there?"
-./scripts/dev.sh ask "List the 5 most expensive products."
-./scripts/dev.sh ask "Which country has the most customers?"
-
-# 7. Schema-aware retrieval lets the agent handle JOINs (week 3)
-./scripts/dev.sh ask "Which 5 products have the highest total revenue?"
-./scripts/dev.sh ask "Which employees handled orders shipped to Germany?"
+./scripts/make-env.sh        # interactively prompts for the 2 required API keys
+./scripts/dev.sh demo        # docker compose up + open browser
 ```
 
-The `ask` command prints the SQL the agent generated, the rows it
-fetched, and the natural-language answer — useful for debugging the
-graph end-to-end. Unsafe inputs like `"Drop the orders table"` are
-caught by the safety layer (see [ADR 0002](docs/decisions/0002-sql-safety.md)).
+The full stack (FastAPI + Next.js + Postgres + pgvector) comes up in one command. Ask a question in the chat panel; SQL streams in, the chart renders, and follow-ups remember the prior turn.
+
+You'll need:
+- **Docker Desktop** / **OrbStack** / **Colima** — any container runtime that speaks `docker compose` v2.
+- **DeepSeek API key** — register at [platform.deepseek.com](https://platform.deepseek.com), ~$1 minimum top-up. Used for the chat LLM.
+- **SiliconFlow API key** — register at [cloud.siliconflow.cn](https://cloud.siliconflow.cn). Used for BGE-M3 embeddings; free tier covers this project comfortably.
+- (Optional) **LangSmith** — for request tracing.
+
+If you'd rather skip the chat UI and run individual commands, see the [CLI reference](#cli-reference) below.
+
+---
+
+<details>
+<summary><strong>Project layout</strong></summary>
+
+```
+data-copilot/
+├── apps/
+│   ├── api/              FastAPI + LangGraph backend (Python 3.12)
+│   │   ├── copilot/      importable Python package
+│   │   │   ├── agent/    13 LangGraph nodes
+│   │   │   ├── eval/     A/B harness, graders, reports
+│   │   │   ├── cache.py  TTL / Redis dual backend
+│   │   │   └── cost.py   per-turn USD + token reducer
+│   │   ├── tests/        291 unit tests + 15 integration tests
+│   │   └── Dockerfile    multi-stage, non-root, ~250 MB
+│   └── web/              Next.js 15 + TypeScript frontend
+│       ├── app/          App Router pages + Route Handlers (SSE proxy)
+│       ├── components/   ChatPanel, ChartRenderer, CostPanel, …
+│       ├── __tests__/    Vitest suites
+│       └── Dockerfile    multi-stage, standalone output, ~150 MB
+├── data/
+│   ├── seed/             Northwind + pgvector init SQL
+│   └── eval/             cases.yaml — 32 hand-written eval cases
+├── docs/
+│   ├── architecture.md   high-level + per-week status table
+│   ├── code-walkthrough.md   line-by-line tour for newcomers
+│   ├── decisions/        12 ADRs documenting every major decision
+│   └── eval/             markdown reports archived per eval run
+├── notebooks/
+│   └── eval-walkthrough.ipynb   3-cell version of `dev.sh eval`
+├── scripts/
+│   ├── make-env.sh       interactive .env bootstrap
+│   ├── dev.sh            local dev helper (up | api | ask | eval | demo …)
+│   └── deploy.sh         Fly.io deploy wrapper
+├── docker-compose.yml    full stack: postgres + api + web
+├── pyproject.toml        uv-managed Python deps
+└── .env.example
+```
+
+</details>
+
+## CLI reference
+
+The dev.sh script is the operator interface for the backend; the Next.js UI is the user interface.
+
+```bash
+# Bring everything up (one command)
+./scripts/dev.sh demo
+
+# Or à la carte
+./scripts/dev.sh up                  # postgres + auto-build schema index
+./scripts/dev.sh api                 # FastAPI on :8000
+./scripts/dev.sh web                 # Next.js dev server on :3000
+./scripts/dev.sh down                # tear it all down
+
+# Talk to the agent without the UI
+./scripts/dev.sh ask "How many customers are there?"
+./scripts/dev.sh ask --cid abc-123 "And in Germany?"   # follow-up
+./scripts/dev.sh ask --cid abc-123 --resume approve    # HITL approve
+
+# Run the eval harness
+./scripts/dev.sh eval                          # all 3 A/B experiments
+./scripts/dev.sh eval --experiment schema_rag  # one A/B
+./scripts/dev.sh eval --dry-run                # stdout only
+
+# Test
+./scripts/dev.sh test                          # 291 unit tests
+./scripts/dev.sh test-integration              # real APIs + DB
+```
+
+### Example: a single-shot data question
+
+```bash
+./scripts/dev.sh ask "How many customers are based in Germany?"
+```
+
+```
+--- SQL ---
+SELECT COUNT(*) FROM customers WHERE country = 'Germany' LIMIT 100
+--- ROWS (1) ---
+[{"count": 11}]
+--- ANSWER ---
+There are 11 customers based in Germany.
+```
+
+Unsafe inputs like `"Drop the orders table"` are caught by the safety layer ([ADR 0002](docs/decisions/0002-sql-safety.md)).
+
+## Feature deep dives
+
+<details>
+<summary><strong>Each major capability, with code refs and ADR pointers</strong></summary>
 
 ### Schema retrieval
 
@@ -170,6 +246,8 @@ The three experiments are `schema_rag`, `self_healing`, and
 See [ADR 0007](docs/decisions/0007-eval-methodology.md) for the
 methodology and trade-offs (e.g. why deterministic graders, why not
 RAGAS).
+
+> **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
 ### Human-in-the-loop confirmation (week 7)
 
@@ -367,6 +445,8 @@ Sentry, and the Redis-migration design.
 
 > **Note** &nbsp;The first `uv sync` downloads ~1 GB of wheels. Subsequent runs are instant.
 
+</details>
+
 ## Roadmap
 
 | Week | Milestone |
@@ -377,11 +457,11 @@ Sentry, and the Redis-migration design.
 | 4 ✅ | Refactor to full LangGraph state machine with self-healing |
 | 5 ✅ | Multi-turn dialogue + chat history compaction |
 | 6 ✅ | Evaluation set + 3 A/B experiments |
-| 7 ✅ | Human-in-the-loop confirmation for expensive queries |
-| 8 ✅ | Visualisation generation + insight summaries |
-| 9 ✅ | Caching layer · cost report · retries with exponential backoff |
-| 10 ✅ | Next.js front-end with streaming responses |
-| 11 ✅ | Docker production image · Fly.io deploy · monitoring · Redis cache backend |
+| 7 | Human-in-the-loop confirmation for destructive / expensive queries |
+| 8 | Visualisation generation + insight summaries |
+| 9 | Caching layer · cost report · retries with exponential backoff |
+| 10 | Next.js front-end with streaming responses |
+| 11 | Docker production image · Fly.io deploy · monitoring |
 | 12 | Polish, demo video, blog series, simplify onboarding |
 
 ## Project layout
@@ -392,16 +472,11 @@ data-copilot/
 │   ├── api/                # FastAPI + LangGraph backend
 │   │   ├── copilot/        # importable Python package
 │   │   │   ├── agent/      # LangGraph nodes, state, graph builder
-│   │   │   ├── cache.py    # in-memory TTL cache (week 9)
-│   │   │   ├── cost.py     # CostBreakdown reducer + USD pricing (week 9)
 │   │   │   ├── config.py
 │   │   │   ├── llm.py
-│   │   │   └── main.py     # FastAPI app (with /ask/stream as of week 10)
+│   │   │   └── main.py     # FastAPI app
 │   │   └── tests/
-│   └── web/                # Next.js 15 + Tailwind v4 (week 10)
-│       ├── app/            # App Router pages + Route Handlers
-│       ├── components/     # Client components (ChatPanel et al)
-│       ├── lib/            # SSE client + typed API contract
+│   └── web/                # Next.js UI (added in week 10)
 ├── data/
 │   └── seed/               # SQL fixtures (Northwind / TPC-H subset)
 ├── docs/

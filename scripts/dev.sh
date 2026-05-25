@@ -18,6 +18,8 @@
 #                                      # also print the cost breakdown (week 9)
 #   ./scripts/dev.sh eval [--experiment NAME] [--dry-run]
 #                                      # run A/B eval harness (week 6)
+#   ./scripts/dev.sh demo               # one-command end-to-end demo:
+#                                      # docker compose up + open browser
 
 set -euo pipefail
 
@@ -255,8 +257,38 @@ PYEOF
     cd apps/api
     uv run python -m copilot.eval "$@"
     ;;
+  demo)
+    # One-shot end-to-end demo:
+    # 1. start the full stack (postgres + api + web)
+    # 2. wait until the web container is healthy
+    # 3. open the Next.js page in the default browser
+    # 4. tail logs so the operator can watch the agent work
+    if [ ! -f .env ]; then
+      echo "No .env yet. Running make-env.sh first..."
+      ./scripts/make-env.sh
+    fi
+    echo "Starting the full stack (postgres + api + web)..."
+    docker compose up -d
+    echo "Waiting for the web container to come up (up to 90s)..."
+    for i in $(seq 1 30); do
+      if [ "$(docker inspect --format='{{.State.Health.Status}}' data-copilot-web 2>/dev/null)" = "healthy" ]; then
+        break
+      fi
+      sleep 3
+    done
+    url="http://localhost:${WEB_PORT:-3000}"
+    echo "Web app should be live at ${url}"
+    case "$(uname -s)" in
+      Darwin)  open "${url}" ;;
+      Linux)   command -v xdg-open >/dev/null && xdg-open "${url}" ;;
+      *)       echo "  (open ${url} in your browser)" ;;
+    esac
+    echo ""
+    echo "Tailing combined logs. Hit Ctrl-C to stop."
+    docker compose logs -f --tail=20 api web
+    ;;
   *)
-    echo "Usage: $0 {up|down|api|test|test-integration|index|ask <question>|eval}"
+    echo "Usage: $0 {up|down|api|web|test|test-integration|index|ask <question>|eval|demo}"
     exit 1
     ;;
 esac
