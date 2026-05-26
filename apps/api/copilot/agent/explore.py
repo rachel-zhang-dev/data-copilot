@@ -31,7 +31,7 @@ import logging
 import re
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from copilot.agent.coverage import _coerce_string_list, _llm_cost, _message_text
 from copilot.agent.prompts import EXPLORE_SCHEMA_SYSTEM, EXPLORE_SCHEMA_USER_TEMPLATE

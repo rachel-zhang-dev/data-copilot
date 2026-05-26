@@ -10,7 +10,6 @@ import json
 from typing import Any
 
 import pytest
-
 from copilot.agent import coverage as coverage_mod
 from copilot.agent import feature_flags
 from copilot.agent.coverage import (
@@ -20,7 +19,6 @@ from copilot.agent.coverage import (
     parse_uncovered_response,
     route_after_coverage,
 )
-
 
 # ---------------------------------------------------------------------------
 # Parsing

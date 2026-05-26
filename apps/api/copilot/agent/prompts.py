@@ -19,7 +19,6 @@ because the model's reply there is parsed, not displayed.
 
 from __future__ import annotations
 
-
 _LANGUAGE_DIRECTIVE = """
 LANGUAGE — IMPORTANT:
   - Respond in the SAME language as the user's question.

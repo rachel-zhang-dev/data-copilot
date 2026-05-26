@@ -17,8 +17,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to repo root so Python's distutils ``lib/`` doesn't shadow
+# the frontend's ``apps/web/lib/`` (TS modules import from ``@/lib/...``).
+/lib/
+/lib64/
 parts/
 sdist/
 var/

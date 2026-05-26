@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from copilot import profiler
 from copilot.profiler import (
     TABLE_SUMMARY_SENTINEL,
@@ -21,7 +19,6 @@ from copilot.profiler import (
     _truncate,
     format_profile_for_llm,
 )
-
 
 # ---------------------------------------------------------------------------
 # _parse_pg_array — the only non-trivial piece of string parsing in the file.

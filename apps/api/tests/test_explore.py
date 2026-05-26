@@ -6,14 +6,12 @@ import json
 from typing import Any
 
 import pytest
-
 from copilot.agent import explore as explore_mod
 from copilot.agent.explore import (
     _fallback_tour,
     explore_schema_node,
     parse_explore_response,
 )
-
 
 # ---------------------------------------------------------------------------
 # Parser

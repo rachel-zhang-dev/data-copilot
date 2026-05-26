@@ -164,7 +164,7 @@ def _column_stats(eng: Engine, table: str) -> dict[str, dict[str, Any]]:
             distinct_count = int(n_distinct)
         else:
             # Negative => fraction of the table. Multiply by row count.
-            distinct_count = int(round(abs(float(n_distinct)) * row_count)) if row_count else None
+            distinct_count = round(abs(float(n_distinct)) * row_count) if row_count else None
 
         sample_values = _parse_pg_array(mcv_text)[:_SAMPLE_VALUES_LIMIT] if mcv_text else None
         hist = _parse_pg_array(hist_text) if hist_text else None
@@ -518,7 +518,7 @@ def _format_column_line(col: dict[str, Any]) -> str:
     if ndv is not None:
         tags.append(f"{ndv} distinct")
     if null_ratio is not None:
-        pct = int(round(null_ratio * 100))
+        pct = round(null_ratio * 100)
         if pct > 0:
             tags.append(f"{pct}% null")
     if samples:
