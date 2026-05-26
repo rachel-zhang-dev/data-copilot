@@ -43,6 +43,12 @@ dependencies = [
     "tenacity>=9.0.0",
     "structlog>=24.4.0",
     "httpx>=0.27.0",
+    "pyyaml>=6.0",                      # eval cases.yaml (week 6)
+    "numpy>=1.26",                      # Phase 1.2: pattern detection (outliers, trend OLS)
+
+    # ---------- Deployment & observability (week 11) ----------
+    "prometheus-fastapi-instrumentator>=7.0.0",  # /metrics endpoint
+    "redis>=5.0.0",                              # optional Redis-backed cache
 ]
 
 [project.optional-dependencies]
