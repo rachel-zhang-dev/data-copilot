@@ -69,6 +69,10 @@ Category = Literal[
     #                     should return intent="schema_explore".
     "unanswerable",
     "schema_explore",
+    # Phase 1.2 / ADR 0017 — questions whose result set should produce
+    # a measurable statistical pattern (outlier or trend). Used by the
+    # patterns_detection A/B to verify the detector fires on real data.
+    "has_pattern",
 ]
 """The buckets we slice metrics by. Adding a new bucket means both
 updating this Literal AND adding cases to cases.yaml.
@@ -139,6 +143,21 @@ class Expect:
     where we want to lock in that classify_intent routed correctly,
     independently of whatever the downstream node decided."""
 
+    # Phase 1.2 / ADR 0017 — pattern detector assertions.
+    expected_pattern_kinds: tuple[str, ...] = ()
+    """Set of pattern ``kind`` values (``outlier`` / ``trend``) that
+    must appear in ``patterns``. Empty tuple skips the assertion.
+
+    Use case: a question like "Count customers grouped by country"
+    against Northwind should produce ``("outlier",)`` because USA's
+    13 customers visibly outpaces every other country. Locks in the
+    detector's value on real data, not just synthetic unit tests."""
+
+    expected_pattern_min_count: int | None = None
+    """Lower bound on the total number of findings emitted. ``None``
+    skips the assertion. Lets us assert "at least 1 finding" without
+    pinning to a specific kind."""
+
 
 @dataclass(frozen=True)
 class CaseSpec:
@@ -167,10 +186,14 @@ _VALID_EXPECT_KEYS = {
     # Phase 1.1
     "expected_verdict",
     "expected_intent",
+    # Phase 1.2
+    "expected_pattern_kinds",
+    "expected_pattern_min_count",
 }
 
 _VALID_VERDICTS = {"ok", "refuse", "explore"}
 _VALID_INTENTS = {"data", "chitchat", "schema_explore"}
+_VALID_PATTERN_KINDS = {"outlier", "trend"}
 
 
 def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
@@ -216,6 +239,25 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
             f"{sorted(_VALID_INTENTS)}, got {expected_intent!r}"
         )
 
+    expected_pattern_kinds_raw = raw.get("expected_pattern_kinds") or []
+    if not isinstance(expected_pattern_kinds_raw, list):
+        raise ValueError(
+            f"case {case_id!r}: expected_pattern_kinds must be a list"
+        )
+    for k in expected_pattern_kinds_raw:
+        if k not in _VALID_PATTERN_KINDS:
+            raise ValueError(
+                f"case {case_id!r}: expected_pattern_kinds entry {k!r} "
+                f"must be one of {sorted(_VALID_PATTERN_KINDS)}"
+            )
+    expected_pattern_min_count = raw.get("expected_pattern_min_count")
+    if expected_pattern_min_count is not None:
+        if not isinstance(expected_pattern_min_count, int) or expected_pattern_min_count < 0:
+            raise ValueError(
+                f"case {case_id!r}: expected_pattern_min_count must be "
+                f"a non-negative int, got {expected_pattern_min_count!r}"
+            )
+
     expect = Expect(
         sql_must_contain=tuple(raw.get("sql_must_contain", []) or []),
         sql_must_not_contain=tuple(raw.get("sql_must_not_contain", []) or []),
@@ -226,6 +268,8 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         row_count=rc,
         expected_verdict=expected_verdict,
         expected_intent=expected_intent,
+        expected_pattern_kinds=tuple(expected_pattern_kinds_raw),
+        expected_pattern_min_count=expected_pattern_min_count,
     )
 
     has_any = (
@@ -238,6 +282,8 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         or expect.row_count is not None
         or expect.expected_verdict is not None
         or expect.expected_intent is not None
+        or expect.expected_pattern_kinds
+        or expect.expected_pattern_min_count is not None
     )
     if not has_any:
         raise ValueError(

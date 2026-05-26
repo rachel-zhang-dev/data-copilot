@@ -73,6 +73,9 @@ def reset_per_turn_node(state: AgentState) -> dict[str, Any]:
         "insight": None,
         "chart_kind": None,
         "chart_spec": None,
+        # Phase 1.2: clear pattern findings so a refused / no-data turn
+        # doesn't inherit outliers from the previous query.
+        "patterns": None,
         "turn_index": current_turn_index(state),
     }
 

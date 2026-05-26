@@ -66,6 +66,12 @@ class RunResult:
     # touching every constructor call.
     intent: str | None = None
     coverage_verdict: str | None = None
+    # Phase 1.2 / ADR 0017 — list of pattern-detector findings, each
+    # a ``{"kind", "column", "severity", "description_key", "payload"}``
+    # dict. Empty / ``None`` when no patterns were detected (KPI,
+    # constant data, non-numeric result). Default to ``None`` for the
+    # same reason as the Phase-1.1 fields.
+    patterns: list[dict[str, Any]] | None = None
 
 
 def _check_sql_must_contain(expect: Expect, run: RunResult) -> list[CheckResult]:
@@ -198,6 +204,40 @@ def _check_expected_intent(expect: Expect, run: RunResult) -> list[CheckResult]:
     ]
 
 
+def _check_pattern_kinds(expect: Expect, run: RunResult) -> list[CheckResult]:
+    """Phase 1.2 — assert that every expected pattern kind appears in
+    ``run.patterns``. ``expected_pattern_kinds`` is treated as a set,
+    not a sequence: ordering doesn't matter, duplicates are ignored."""
+    if not expect.expected_pattern_kinds:
+        return []
+    actual_kinds = {p.get("kind") for p in (run.patterns or [])}
+    out: list[CheckResult] = []
+    for kind in expect.expected_pattern_kinds:
+        ok = kind in actual_kinds
+        out.append(
+            CheckResult(
+                f"pattern_kind({kind!r})",
+                ok,
+                "" if ok else f"missing in actual kinds={sorted(str(k) for k in actual_kinds)}",
+            )
+        )
+    return out
+
+
+def _check_pattern_min_count(expect: Expect, run: RunResult) -> list[CheckResult]:
+    if expect.expected_pattern_min_count is None:
+        return []
+    n = len(run.patterns or [])
+    ok = n >= expect.expected_pattern_min_count
+    return [
+        CheckResult(
+            f"pattern_min_count(>={expect.expected_pattern_min_count})",
+            ok,
+            "" if ok else f"got {n} pattern(s)",
+        )
+    ]
+
+
 def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     """Run all applicable assertions in sequence; result is AND of all."""
     checks: list[CheckResult] = []
@@ -210,6 +250,8 @@ def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     checks.extend(_check_row_count(case.expects, run))
     checks.extend(_check_expected_verdict(case.expects, run))
     checks.extend(_check_expected_intent(case.expects, run))
+    checks.extend(_check_pattern_kinds(case.expects, run))
+    checks.extend(_check_pattern_min_count(case.expects, run))
 
     overall = all(c.passed for c in checks) if checks else True
     return GradeReport(case_id=case.id, passed=overall, checks=tuple(checks))

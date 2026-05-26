@@ -51,6 +51,8 @@ Graph (Phase 1.1)::
           |            |     |     |
           |            |     |  summarize_result
           |            |     |     |
+          |            |     |  detect_patterns  (Phase 1.2)
+          |            |     |     |
           |            |     |  visualize
           |            |     |     |
           |            |     |  finalize_error
@@ -80,6 +82,7 @@ from copilot.agent.coverage import (
 )
 from copilot.agent.dialogue import append_to_dialogue_node, reset_per_turn_node
 from copilot.agent.explore import explore_schema_node
+from copilot.agent.patterns.node import detect_patterns_node
 from copilot.agent.retriever import retrieve_schema_node
 from copilot.agent.risk import (
     await_confirmation_node,
@@ -118,6 +121,7 @@ def build_graph(
     workflow.add_node("await_confirmation", await_confirmation_node)
     workflow.add_node("execute_sql", nodes.execute_sql_node)
     workflow.add_node("summarize_result", nodes.summarize_result_node)
+    workflow.add_node("detect_patterns", detect_patterns_node)
     workflow.add_node("visualize", visualize_node)
     workflow.add_node("finalize_error", nodes.finalize_error_node)
     workflow.add_node("append_to_dialogue", append_to_dialogue_node)
@@ -211,7 +215,14 @@ def build_graph(
     workflow.add_edge("small_talk", "append_to_dialogue")
     workflow.add_edge("explore_schema", "append_to_dialogue")
     workflow.add_edge("explain_uncovered", "append_to_dialogue")
-    workflow.add_edge("summarize_result", "visualize")
+    # Phase 1.2 (ADR 0017) — pattern detector runs between
+    # ``summarize_result`` (which produces the legacy NL insight) and
+    # ``visualize`` (which decides the chart kind). detector findings
+    # are prepended to ``insight.bullets`` so the existing
+    # InsightPanel surfaces them with no FE change; ``patterns``
+    # carries the structured form for future chart annotations.
+    workflow.add_edge("summarize_result", "detect_patterns")
+    workflow.add_edge("detect_patterns", "visualize")
     workflow.add_edge("visualize", "append_to_dialogue")
     workflow.add_edge("finalize_error", "append_to_dialogue")
     workflow.add_edge("append_to_dialogue", "compact_history")

@@ -52,6 +52,13 @@ class ExperimentConfig:
     to quantify the gate's impact on ``unanswerable`` / ``schema_explore``
     cases without harming the success rate on the original 32."""
 
+    patterns_detection_enabled: bool = True
+    """When False, ``detect_patterns_node`` short-circuits before any
+    detector runs — the insight envelope keeps only the legacy
+    bullets from ``summarize_result``. Used by A6 (the
+    patterns_detection A/B) to quantify how often the detector adds
+    user-visible value on the ``has_pattern`` category."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -108,4 +115,16 @@ WITHOUT_COVERAGE_CHECK = ExperimentConfig(
         "score badly; existing 32 cases should stay green."
     ),
     extra_tags=("a5", "coverage_check_off"),
+)
+
+WITHOUT_PATTERNS_DETECTION = ExperimentConfig(
+    label="patterns_detection_off",
+    patterns_detection_enabled=False,
+    notes=(
+        "Phase 1.2 detector disabled — no pattern bullets are merged "
+        "into ``insight.bullets`` and ``patterns`` stays empty. "
+        "``has_pattern`` cases will fail their assertion; everything "
+        "else should stay flat."
+    ),
+    extra_tags=("a6", "patterns_detection_off"),
 )

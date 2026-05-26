@@ -269,6 +269,15 @@ class AskResponse(BaseModel):
     # plain data turns where the gate voted ``ok``.
     intent: Literal["data", "chitchat", "schema_explore"] | None = None
     coverage: dict[str, Any] | None = None
+    # Phase 1.2 — pattern detector (ADR 0017). Structured statistical
+    # findings (outliers / trends) computed deterministically over the
+    # SQL result. The same findings drive pattern bullets that get
+    # prepended to ``insight.bullets`` so the existing InsightPanel
+    # surfaces them with zero FE change; ``patterns`` is kept on the
+    # response so the FE can later render badges / chart annotations
+    # without re-running the stats. ``None`` / empty when the result
+    # set was too small or no numeric column existed.
+    patterns: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +405,7 @@ def _build_ask_response(
             drill_downs=[],
             intent=result.get("intent"),
             coverage=result.get("coverage"),
+            patterns=result.get("patterns"),
         )
 
     return AskResponse(
@@ -418,6 +428,7 @@ def _build_ask_response(
         drill_downs=drill_downs or [],
         intent=result.get("intent"),
         coverage=result.get("coverage"),
+        patterns=result.get("patterns"),
     )
 
 
@@ -594,7 +605,7 @@ def _phase_payload(node: str, diff: Any) -> dict[str, Any]:
     whole stream.
     """
     keep = {"intent", "sql", "row_count", "error", "answer", "chart_kind",
-            "risk_decision", "turn_index", "coverage"}
+            "risk_decision", "turn_index", "coverage", "patterns"}
     if isinstance(diff, dict):
         safe_diff: dict[str, Any] = {k: v for k, v in diff.items() if k in keep}
     else:

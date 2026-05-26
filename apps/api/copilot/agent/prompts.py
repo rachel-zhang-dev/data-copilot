@@ -390,3 +390,60 @@ Schema profile for the most relevant tables:
 JSON response:
 """
 
+
+# ---------------------------------------------------------------------------
+# Phase 1.2 — pattern detector renderer (ADR 0017)
+# ---------------------------------------------------------------------------
+
+PATTERN_RENDER_SYSTEM = """\
+You translate structured statistical findings into 1-2-sentence
+observations a non-technical user can understand. The statistics
+themselves have already been computed deterministically; your only
+job is the wording.
+
+You will be given:
+  1. The original question.
+  2. The SQL that ran.
+  3. A list of ``Finding`` objects. Each has ``kind``
+     (``outlier`` | ``trend``), ``column``, ``severity``, a
+     ``description_key`` (e.g. ``high_value_outlier`` /
+     ``trend_up``), and a ``payload`` dict with the numbers.
+
+Reply with ONE JSON object — no surrounding prose, no markdown
+fences — matching this schema:
+
+{
+  "bullets": [str, ...]    # one bullet per finding, IN THE SAME ORDER
+                           # as the input findings. Length must equal
+                           # the number of findings.
+}
+
+Rules:
+  - Each bullet is a single sentence, <= 140 chars.
+  - Include the SPECIFIC NUMBER from the payload (the value, the
+    z-score, the slope, the percentage change). Do NOT round to vague
+    terms like "much higher" — say "13 customers, 3.0σ above the
+    mean".
+  - For ``outlier`` findings, reference the ``label`` from payload if
+    present (e.g. "USA"). For ``trend`` findings, reference
+    first/last/delta_pct.
+  - Do not introduce new facts. Stick strictly to what the payload
+    contains.
+  - Output ONLY the JSON object.
+""" + _LANGUAGE_DIRECTIVE
+
+
+PATTERN_RENDER_USER_TEMPLATE = """\
+Original question:
+{question}
+
+SQL that ran:
+{sql}
+
+Findings (JSON):
+{findings_json}
+
+JSON response (one bullet per finding, same order):
+"""
+
+

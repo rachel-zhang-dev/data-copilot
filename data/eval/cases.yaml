@@ -415,3 +415,39 @@
     expected_intent: schema_explore
     expected_verdict: explore
     sql_must_be_absent: true
+
+# =========================================================================
+# has_pattern (3) — Phase 1.2 / ADR 0017. Questions whose result set
+# carries a measurable statistical pattern (outlier or trend). The
+# pattern detector should surface it; gate must NOT refuse these.
+#
+# We use ``expected_pattern_kinds`` and ``expected_pattern_min_count``
+# to lock in detector behaviour on real Northwind data, not just
+# synthetic unit tests.
+# =========================================================================
+
+- id: pattern-customers-by-country-outlier
+  question: Count customers grouped by country.
+  category: has_pattern
+  expects:
+    sql_must_contain: [customers, country]
+    expected_pattern_kinds: [outlier]
+    expected_pattern_min_count: 1
+    row_count: { min: 5, max: 30 }
+
+- id: pattern-orders-by-employee-outlier
+  question: How many orders did each employee handle in total?
+  category: has_pattern
+  expects:
+    sql_must_contain: [employees, orders]
+    expected_pattern_min_count: 1
+    row_count: { min: 5, max: 50 }
+
+- id: pattern-monthly-orders-1997-trend
+  question: How many orders were placed each month in 1997?
+  category: has_pattern
+  expects:
+    sql_must_contain: [orders, 1997]
+    sql_should_contain_any: [month, date]
+    expected_pattern_min_count: 1
+    row_count: { min: 5, max: 12 }

@@ -252,6 +252,28 @@ class AgentState(TypedDict, total=False):
     ``kpi`` / ``table`` (the UI renders those directly from
     ``sql_result``) and outside the data success path."""
 
+    # ---------- Outputs added in Phase 1.2 (ADR 0017) ----------
+    patterns: list[dict[str, Any]]
+    """Statistical findings produced by ``detect_patterns_node``:
+
+        [
+            {
+                "kind": "outlier" | "trend",
+                "column": str,
+                "severity": "info" | "notable" | "high",
+                "description_key": str,
+                "payload": {...detector-specific evidence...}
+            },
+            ...
+        ]
+
+    Empty list / unset when the result set was too small or contained
+    no numeric columns to detect on. The same findings drive the
+    pattern bullets that get prepended to ``insight.bullets`` so the
+    front-end's existing ``InsightPanel`` surfaces them without new
+    UI; ``patterns`` is the structured form callers can use for
+    future chart annotations or filtering."""
+
     # ---------- Outputs added in week 9 ----------
     cost: Annotated[CostBreakdown, add_cost]
     """Cumulative cost breakdown for the conversation (LLM / embedding

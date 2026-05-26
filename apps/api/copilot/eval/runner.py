@@ -236,6 +236,7 @@ async def _invoke_case(
         total_tokens=_estimate_tokens_from_messages(state),
         intent=state.get("intent"),
         coverage_verdict=coverage.get("verdict"),
+        patterns=state.get("patterns"),
     )
 
 
@@ -275,6 +276,7 @@ async def run_eval(
         retry_budget=cfg.retry_budget_override,
         analyst_enabled=cfg.analyst_enabled,
         coverage_check_enabled=cfg.coverage_check_enabled,
+        patterns_detection_enabled=cfg.patterns_detection_enabled,
     ):
         for case in cases:
             log.info("  [%s] %s — %s", cfg.label, case.id, case.category)

@@ -45,6 +45,12 @@ ANALYST_ENABLED: bool = True
 # behaviour: always generate SQL). The fifth A/B flips this.
 COVERAGE_CHECK_ENABLED: bool = True
 
+# Phase 1.2 — statistical pattern detection (ADR 0017). When False,
+# ``detect_patterns_node`` short-circuits before any detector runs;
+# the insight envelope keeps only the legacy bullets from
+# ``summarize_result``. The sixth A/B flips this.
+PATTERNS_DETECTION_ENABLED: bool = True
+
 
 @contextmanager
 def override(
@@ -54,6 +60,7 @@ def override(
     retry_budget: dict[ErrorClass, int] | None = None,
     analyst_enabled: bool | None = None,
     coverage_check_enabled: bool | None = None,
+    patterns_detection_enabled: bool | None = None,
 ) -> Iterator[None]:
     """Flip flags for the duration of the ``with`` block.
 
@@ -62,12 +69,13 @@ def override(
     some were set.
     """
     global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED, ANALYST_ENABLED
-    global COVERAGE_CHECK_ENABLED
+    global COVERAGE_CHECK_ENABLED, PATTERNS_DETECTION_ENABLED
 
     prev_rag = SCHEMA_RAG_ENABLED
     prev_dlg = DIALOGUE_CONTEXT_ENABLED
     prev_analyst = ANALYST_ENABLED
     prev_coverage = COVERAGE_CHECK_ENABLED
+    prev_patterns = PATTERNS_DETECTION_ENABLED
     prev_budget = dict(_nodes_mod.RETRY_BUDGET)
 
     if schema_rag_enabled is not None:
@@ -78,6 +86,8 @@ def override(
         ANALYST_ENABLED = analyst_enabled
     if coverage_check_enabled is not None:
         COVERAGE_CHECK_ENABLED = coverage_check_enabled
+    if patterns_detection_enabled is not None:
+        PATTERNS_DETECTION_ENABLED = patterns_detection_enabled
     if retry_budget is not None:
         # Mutate in place so existing references to the dict (e.g. in
         # tests that imported the module attribute) see the change.
@@ -91,5 +101,6 @@ def override(
         DIALOGUE_CONTEXT_ENABLED = prev_dlg
         ANALYST_ENABLED = prev_analyst
         COVERAGE_CHECK_ENABLED = prev_coverage
+        PATTERNS_DETECTION_ENABLED = prev_patterns
         _nodes_mod.RETRY_BUDGET.clear()
         _nodes_mod.RETRY_BUDGET.update(prev_budget)

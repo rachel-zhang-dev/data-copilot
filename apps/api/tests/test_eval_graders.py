@@ -73,6 +73,80 @@ def test_expected_intent_fails_on_wrong_route() -> None:
     assert any("intent" in c.name for c in g.checks)
 
 
+# expected_pattern_kinds / expected_pattern_min_count (Phase 1.2) ------------
+
+
+def test_expected_pattern_kinds_passes_when_all_present() -> None:
+    case = _case(
+        Expect(expected_pattern_kinds=("outlier", "trend")),
+        category="has_pattern",
+    )
+    run = _run(
+        patterns=[
+            {"kind": "outlier", "column": "n"},
+            {"kind": "trend", "column": "n"},
+        ]
+    )
+    assert grade(case, run).passed
+
+
+def test_expected_pattern_kinds_fails_when_kind_missing() -> None:
+    case = _case(
+        Expect(expected_pattern_kinds=("outlier", "trend")),
+        category="has_pattern",
+    )
+    run = _run(patterns=[{"kind": "outlier", "column": "n"}])
+    g = grade(case, run)
+    assert not g.passed
+    assert any("pattern_kind" in c.name and "trend" in c.name for c in g.checks)
+
+
+def test_expected_pattern_kinds_fails_when_patterns_is_none() -> None:
+    case = _case(
+        Expect(expected_pattern_kinds=("outlier",)),
+        category="has_pattern",
+    )
+    run = _run(patterns=None)
+    assert not grade(case, run).passed
+
+
+def test_expected_pattern_min_count_passes_when_meeting_threshold() -> None:
+    case = _case(
+        Expect(expected_pattern_min_count=2), category="has_pattern"
+    )
+    run = _run(
+        patterns=[
+            {"kind": "outlier", "column": "n"},
+            {"kind": "trend", "column": "n"},
+            {"kind": "outlier", "column": "m"},
+        ]
+    )
+    assert grade(case, run).passed
+
+
+def test_expected_pattern_min_count_fails_below_threshold() -> None:
+    case = _case(
+        Expect(expected_pattern_min_count=2), category="has_pattern"
+    )
+    run = _run(patterns=[{"kind": "outlier", "column": "n"}])
+    g = grade(case, run)
+    assert not g.passed
+    assert any("pattern_min_count" in c.name for c in g.checks)
+
+
+def test_pattern_assertions_skipped_when_unset() -> None:
+    """Existing cases without ``expected_pattern_*`` fields must stay
+    green even when patterns happen to land in the run result."""
+    case = _case(Expect(sql_must_contain=("customers",)))
+    run = _run(
+        sql="SELECT * FROM customers",
+        patterns=[{"kind": "outlier", "column": "n"}],
+    )
+    g = grade(case, run)
+    assert g.passed
+    assert all("pattern" not in c.name for c in g.checks)
+
+
 # sql_must_contain ----------------------------------------------------------
 
 

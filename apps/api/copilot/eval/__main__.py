@@ -31,6 +31,7 @@ from copilot.eval.experiments import (
     run_analyst_ab,
     run_coverage_check_ab,
     run_dialogue_context_ab,
+    run_patterns_detection_ab,
     run_schema_rag_ab,
     run_self_healing_ab,
 )
@@ -56,6 +57,8 @@ _EXPERIMENTS = {
     "analyst": run_analyst_ab,
     # Phase 1.1 / ADR 0016
     "coverage_check": run_coverage_check_ab,
+    # Phase 1.2 / ADR 0017
+    "patterns_detection": run_patterns_detection_ab,
 }
 
 
