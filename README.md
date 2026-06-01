@@ -478,6 +478,7 @@ Sentry, and the Redis-migration design.
 | 1.3 ✅ | Phase 1 / step 3 — investigate intent + intent-aware drill-down budget (2 hops for data, 6 for investigate) ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 1.4 ✅ | Phase 1 / step 4 — saved conversations + left-rail drawer + click-to-replay ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
 | 2.1 🟡 | Phase 2 / step 1 — dashboard cards backend (DDL + 7 endpoints + ADR); FE grid renderer pending ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
+| 2.1.1 ⏳ | Phase 2 / step 1, FE half — "Add to dashboard" button on chat turns, dashboard list page, react-grid-layout renderer for cards, drag-resize, inline rename. Backend endpoints already shipped in 2.1; this is purely a Next.js + Tailwind frontend commit. Est. 2-3 days. |
 
 ## Project layout
 
