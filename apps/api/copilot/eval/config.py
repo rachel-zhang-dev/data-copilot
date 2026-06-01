@@ -59,6 +59,17 @@ class ExperimentConfig:
     patterns_detection A/B) to quantify how often the detector adds
     user-visible value on the ``has_pattern`` category."""
 
+    investigate_mode_enabled: bool = True
+    """When False, the supervisor caps every turn — including
+    ``investigate`` intent — at the legacy 2-hop budget. Used by A7
+    (the investigate_mode A/B) to quantify how much value the higher
+    hop budget contributes on open-ended research questions.
+
+    Implementation note: the override is honoured via
+    ``copilot.agents.supervisor.HOP_BUDGETS`` — the runner
+    monkey-patches the map for the duration of the run, so production
+    code doesn't need an extra env var."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -127,4 +138,16 @@ WITHOUT_PATTERNS_DETECTION = ExperimentConfig(
         "else should stay flat."
     ),
     extra_tags=("a6", "patterns_detection_off"),
+)
+
+WITHOUT_INVESTIGATE_MODE = ExperimentConfig(
+    label="investigate_mode_off",
+    investigate_mode_enabled=False,
+    notes=(
+        "Phase 1.3 higher hop budget disabled — every turn caps at 2 "
+        "hops regardless of intent. ``investigate`` cases should "
+        "fail their drill_count assertion; classifier routing still "
+        "works (intent labels remain) so other categories are flat."
+    ),
+    extra_tags=("a7", "investigate_mode_off"),
 )

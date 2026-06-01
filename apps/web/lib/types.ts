@@ -54,7 +54,7 @@ export interface CostBreakdown {
 }
 
 // Phase 1.1 — coverage gate & schema explorer envelope.
-export type Intent = "data" | "chitchat" | "schema_explore";
+export type Intent = "data" | "chitchat" | "schema_explore" | "investigate";
 export type CoverageVerdict = "ok" | "refuse" | "explore";
 
 export interface CoverageTopic {

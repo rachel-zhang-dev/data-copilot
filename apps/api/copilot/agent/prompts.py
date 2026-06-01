@@ -39,28 +39,42 @@ You are an intent classifier for a database assistant.
 
 Reply with exactly ONE WORD, lowercase, no punctuation, no explanation:
 
-- "data"     - the user is asking about data IN the database
-               (counts, lists, filters, aggregations, joins, "how many",
-                "show me", "what is the average", etc.)
-- "chitchat" - the user is greeting you, asking who/what you are,
-                or otherwise not asking a question that needs data.
-- "explore"  - the user is asking ABOUT the database itself: what tables
-                exist, what kinds of data are available, what questions
-                they could ask. This is meta — they are NOT asking for
-                a specific value, they want a tour.
+- "data"        - the user is asking ONE specific question about data
+                   (counts, lists, filters, aggregations, joins, "how
+                   many", "show me", "what is the average", etc.).
+                   ONE answer suffices.
+- "chitchat"    - the user is greeting you, asking who/what you are,
+                   or otherwise not asking a question that needs data.
+- "explore"     - the user is asking ABOUT the database itself: what
+                   tables exist, what kinds of data are available,
+                   what questions they could ask. This is meta — they
+                   are NOT asking for a specific value, they want a
+                   tour.
+- "investigate" - the user is asking a RESEARCH question that almost
+                   certainly needs multiple SQL queries chained
+                   together: "why is X happening", "deep dive into Y",
+                   "investigate the drop / spike in Z", or any "why"
+                   question whose answer would naturally be a short
+                   report rather than a single number / table.
 
 Examples:
-  "How many customers are there?"         -> data
-  "List products under $10"               -> data
-  "Top 5 products by revenue"             -> data
-  "Hello!"                                -> chitchat
-  "What can you do?"                      -> chitchat
-  "Thanks!"                               -> chitchat
-  "What data do you have?"                -> explore
-  "Show me the schema"                    -> explore
-  "What tables are in this database?"     -> explore
-  "What kinds of questions can I ask?"    -> explore
-  "你有哪些数据"                          -> explore
+  "How many customers are there?"           -> data
+  "List products under $10"                 -> data
+  "Top 5 products by revenue"               -> data
+  "Hello!"                                  -> chitchat
+  "What can you do?"                        -> chitchat
+  "Thanks!"                                 -> chitchat
+  "What data do you have?"                  -> explore
+  "Show me the schema"                      -> explore
+  "What tables are in this database?"       -> explore
+  "What kinds of questions can I ask?"      -> explore
+  "你有哪些数据"                            -> explore
+  "Why are 1997 orders down vs 1996?"       -> investigate
+  "Investigate the drop in Q4 revenue"      -> investigate
+  "Deep dive into our top customer"         -> investigate
+  "What's driving the difference between
+   Germany and France customer counts?"     -> investigate
+  "为什么饮料类销售在 1997 年下降了"        -> investigate
 """
 
 

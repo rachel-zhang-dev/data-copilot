@@ -72,6 +72,11 @@ class RunResult:
     # constant data, non-numeric result). Default to ``None`` for the
     # same reason as the Phase-1.1 fields.
     patterns: list[dict[str, Any]] | None = None
+    # Phase 1.3 / ADR 0018 — number of recursive Specialist
+    # invocations the supervisor performed for this case. 0 means a
+    # single answer (no analyst drill-down); 1 means one drill-down;
+    # the investigate-A/B cases assert >= 2.
+    drill_count: int = 0
 
 
 def _check_sql_must_contain(expect: Expect, run: RunResult) -> list[CheckResult]:
@@ -238,6 +243,25 @@ def _check_pattern_min_count(expect: Expect, run: RunResult) -> list[CheckResult
     ]
 
 
+def _check_drill_count(expect: Expect, run: RunResult) -> list[CheckResult]:
+    """Phase 1.3 — assert the supervisor recursed at least N times.
+
+    ``investigate`` cases set this to 2+ so the A/B between
+    ``investigate_mode_on`` (budget 6) and ``investigate_mode_off``
+    (budget 2) shows a measurable difference."""
+    if expect.expected_drill_count_min is None:
+        return []
+    n = run.drill_count
+    ok = n >= expect.expected_drill_count_min
+    return [
+        CheckResult(
+            f"drill_count(>={expect.expected_drill_count_min})",
+            ok,
+            "" if ok else f"got drill_count={n}",
+        )
+    ]
+
+
 def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     """Run all applicable assertions in sequence; result is AND of all."""
     checks: list[CheckResult] = []
@@ -252,6 +276,7 @@ def grade(case: CaseSpec, run: RunResult) -> GradeReport:
     checks.extend(_check_expected_intent(case.expects, run))
     checks.extend(_check_pattern_kinds(case.expects, run))
     checks.extend(_check_pattern_min_count(case.expects, run))
+    checks.extend(_check_drill_count(case.expects, run))
 
     overall = all(c.passed for c in checks) if checks else True
     return GradeReport(case_id=case.id, passed=overall, checks=tuple(checks))

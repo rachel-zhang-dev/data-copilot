@@ -451,3 +451,45 @@
     sql_should_contain_any: [month, date]
     expected_pattern_min_count: 1
     row_count: { min: 5, max: 12 }
+
+# =========================================================================
+# investigate (4) — Phase 1.3 / ADR 0018. Open-ended research questions
+# that should classify as ``investigate`` AND benefit from a higher
+# drill-down budget. The classifier assertion (``expected_intent``)
+# is independently checked at the SQL-Specialist layer; the
+# drill-count assertion is the headline metric for the A/B experiment.
+#
+# NOTE: ``expected_drill_count_min`` is only meaningful when the eval
+# runner uses the supervisor graph (Phase 1.3.1 — see ADR 0018
+# §"Eval gap"). Today the runner uses the SQL Specialist directly so
+# ``RunResult.drill_count`` is always 0; we still ship the assertion
+# so a future commit that flips the runner doesn't need a YAML edit.
+# =========================================================================
+
+- id: investigate-beverages-decline
+  question: Why did Beverages sales decline in 1997?
+  category: investigate
+  expects:
+    expected_intent: investigate
+    expected_drill_count_min: 2
+
+- id: investigate-top-customer-deep-dive
+  question: Deep dive into our top customer — who are they and what do they buy?
+  category: investigate
+  expects:
+    expected_intent: investigate
+    expected_drill_count_min: 2
+
+- id: investigate-q4-revenue-drop
+  question: Investigate the Q4 1997 revenue drop versus Q3.
+  category: investigate
+  expects:
+    expected_intent: investigate
+    expected_drill_count_min: 2
+
+- id: investigate-germany-vs-france
+  question: What's driving the difference between Germany and France customer behaviour?
+  category: investigate
+  expects:
+    expected_intent: investigate
+    expected_drill_count_min: 2

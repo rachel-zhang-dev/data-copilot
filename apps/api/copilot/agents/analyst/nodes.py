@@ -108,18 +108,33 @@ def _dialogue_context(dialogue: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _drill_eligibility(hop_count: int) -> str:
+def _drill_eligibility(hop_count: int, hop_budget: int, intent: str | None) -> str:
     """One-sentence prompt cue about whether drill-down is allowed.
 
     ``hop_count`` is the number of Specialist invocations that already
-    completed before the Analyst's prompt was built. So:
+    completed before the Analyst's prompt was built; ``hop_budget``
+    is the maximum allowed (Phase 1.3 lets it be > 2 in
+    ``investigate`` mode).
 
-    * 1 → we're analysing the top-level answer; drill_down allowed.
-    * 2+ → we're analysing a drill-down's own output; refuse further.
+    * hop_count < hop_budget → drill_down allowed.
+    * hop_count >= hop_budget → must refuse further.
     """
-    if hop_count >= 2:
-        return "You MUST set drill_down to null on this turn (we're already inside a drill-down)."
-    return "You MAY emit a single drill_down request if rows hint at a sharper question."
+    if hop_count >= hop_budget:
+        return (
+            "You MUST set drill_down to null on this turn "
+            f"(hop budget of {hop_budget} has been exhausted)."
+        )
+    remaining = hop_budget - hop_count
+    if intent == "investigate":
+        return (
+            "You SHOULD emit a drill_down if the user's research question "
+            "isn't fully answered yet. "
+            f"{remaining} hop(s) remain — make this one count."
+        )
+    return (
+        "You MAY emit a single drill_down request if the rows hint at "
+        f"a sharper question. {remaining} hop(s) remain."
+    )
 
 
 def _llm_cost(response: AIMessage, prompt_text: str) -> CostBreakdown:
@@ -149,6 +164,9 @@ def _build_request(state: SupervisorState) -> AnalystRequest | None:
     Returns ``None`` when there's nothing for the Analyst to look at
     (no SQL was run, no rows, chitchat / error path).
     """
+    # Lazy import to avoid module-import cycle (supervisor → analyst).
+    from copilot.agents.supervisor import _hop_budget_for
+
     sql_state = state.get("sql_result") or {}
     rows = sql_state.get("sql_result")
     if not isinstance(rows, list) or not rows:
@@ -157,6 +175,21 @@ def _build_request(state: SupervisorState) -> AnalystRequest | None:
         return None
     if sql_state.get("error"):
         return None
+
+    # Phase 1.3 — assemble the drill-down history so the Analyst can
+    # see what's already been asked. The list starts with the user's
+    # original question (the FIRST entry in ``drill_downs`` if any,
+    # otherwise the current sql_state's question) and chains every
+    # past Specialist invocation's question in invocation order.
+    past_specialist_states: list[dict[str, Any]] = list(
+        state.get("drill_downs") or []
+    )
+    drill_history: list[str] = [
+        str(s.get("question"))
+        for s in past_specialist_states
+        if s.get("question")
+    ]
+
     return AnalystRequest(
         question=sql_state.get("question", state.get("question") or ""),
         sql=sql_state.get("sql"),
@@ -167,6 +200,9 @@ def _build_request(state: SupervisorState) -> AnalystRequest | None:
         chart_spec=sql_state.get("chart_spec"),
         dialogue_recent=list(sql_state.get("dialogue") or []),
         hop_count=state.get("hop_count", 1),
+        intent=sql_state.get("intent"),
+        hop_budget=_hop_budget_for(state),
+        drill_history=drill_history,
     )
 
 
@@ -197,6 +233,11 @@ def analyst_node(state: SupervisorState) -> dict[str, Any]:
         log.info("analyst: nothing to analyse (chitchat / no rows / error)")
         return {"analyst": None}
 
+    drill_history_text = (
+        "\n".join(f"  {i+1}. {q}" for i, q in enumerate(request.drill_history))
+        if request.drill_history
+        else "  (none — this is the first hop)"
+    )
     user_msg = ANALYST_USER_TEMPLATE.format(
         question=request.question,
         sql=request.sql or "(none)",
@@ -205,7 +246,12 @@ def analyst_node(state: SupervisorState) -> dict[str, Any]:
         answer=request.answer,
         dialogue_context=_dialogue_context(request.dialogue_recent),
         hop_count=request.hop_count,
-        drill_down_eligibility=_drill_eligibility(request.hop_count),
+        hop_budget=request.hop_budget,
+        intent=request.intent or "data",
+        drill_history=drill_history_text,
+        drill_down_eligibility=_drill_eligibility(
+            request.hop_count, request.hop_budget, request.intent
+        ),
     )
 
     # JSON mode keeps the model honest; the ``parse_response`` fallback
@@ -234,14 +280,19 @@ def analyst_node(state: SupervisorState) -> dict[str, Any]:
         }
 
     # Belt-and-suspenders: ``hop_count`` reflects how many SQL
-    # Specialist runs have already completed. After hop 1 (top-level
-    # answer), Analyst MAY propose one drill-down → hop 2. After hop 2
-    # (the drill-down itself), Analyst must NOT propose another —
-    # supervisor would refuse via ``route_after_analyst`` but we scrub
-    # it here too so the response payload doesn't carry a misleading
-    # field.
-    if request.hop_count >= 2 and parsed.drill_down is not None:
-        log.info("analyst: discarding drill_down because hop_count=%d", request.hop_count)
+    # Specialist runs have already completed. Phase 1.3 made the
+    # budget intent-aware (2 for plain ``data``, 6 for
+    # ``investigate``), so the cap moved from a hardcoded "2" to
+    # whatever the supervisor told us via ``hop_budget``. Same
+    # belt-and-suspenders principle: supervisor's
+    # ``route_after_analyst`` would refuse anyway, but scrubbing it
+    # here too keeps the response payload honest.
+    if request.hop_count >= request.hop_budget and parsed.drill_down is not None:
+        log.info(
+            "analyst: discarding drill_down because hop_count=%d budget=%d",
+            request.hop_count,
+            request.hop_budget,
+        )
         parsed = parsed.model_copy(update={"drill_down": None})
 
     log.info(

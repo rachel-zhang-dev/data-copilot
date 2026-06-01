@@ -39,7 +39,7 @@ from langgraph.graph.message import add_messages
 
 from copilot.cost import CostBreakdown, add_cost
 
-Intent = Literal["data", "chitchat", "schema_explore"]
+Intent = Literal["data", "chitchat", "schema_explore", "investigate"]
 """Top-level intent. Decided by ``classify_intent_node`` and used by
 ``route_after_classify`` to branch the graph.
 
@@ -49,7 +49,14 @@ Intent = Literal["data", "chitchat", "schema_explore"]
                        "what data do you have?" / "show me the tables".
                        Routes to ``explore_schema_node`` which renders
                        the cached ``schema_profiles`` as a grouped
-                       tour."""
+                       tour.
+* ``investigate``    — Phase 1.3 / ADR 0018. The user is asking an
+                       open-ended research question ("why is X
+                       declining" / "investigate the Q3 drop" / "deep
+                       dive into ..."). The graph runs the same data
+                       path as ``data`` but the supervisor raises the
+                       drill-down budget so the analyst can chain
+                       multiple follow-ups before answering."""
 
 
 CoverageVerdict = Literal["ok", "refuse"]

@@ -176,6 +176,188 @@ def test_route_after_analyst_hop_budget_terminates() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 1.3 — intent-aware hop budgets (ADR 0018)
+# ---------------------------------------------------------------------------
+
+
+def test_hop_budget_data_intent_is_two() -> None:
+    """Plain ``data`` turns keep the legacy 2-hop ceiling."""
+    from copilot.agents.supervisor import _hop_budget_for
+
+    state: dict[str, Any] = {"sql_result": {"intent": "data"}}
+    assert _hop_budget_for(state) == 2
+
+
+def test_hop_budget_investigate_intent_is_six() -> None:
+    """``investigate`` turns get a 6-hop ceiling so the analyst can
+    chain multiple drill-downs (Phase 1.3 / ADR 0018)."""
+    from copilot.agents.supervisor import _hop_budget_for
+
+    state: dict[str, Any] = {"sql_result": {"intent": "investigate"}}
+    assert _hop_budget_for(state) == 6
+
+
+def test_hop_budget_unknown_intent_falls_back_to_default() -> None:
+    """Defensive default for an unset or unrecognised intent is the
+    conservative 2-hop ceiling — never silently raise the budget."""
+    from copilot.agents.supervisor import _hop_budget_for
+
+    assert _hop_budget_for({"sql_result": {"intent": "chitchat"}}) == 2
+    assert _hop_budget_for({"sql_result": {}}) == 2
+    assert _hop_budget_for({}) == 2
+
+
+def test_route_after_analyst_investigate_allows_third_hop() -> None:
+    """Under the legacy MAX_HOP_COUNT=2 a hop_count of 2 ends the
+    loop. In investigate mode the budget is 6, so the same hop_count
+    should LOOP back, not end."""
+    state: dict[str, Any] = {
+        "hop_count": 2,
+        "sql_result": {"intent": "investigate"},
+        "analyst": AnalystResponse(
+            drill_down=DrillDownRequest(question="deeper", why="...")
+        ),
+    }
+    assert route_after_analyst(state) == "sql_specialist"
+
+
+def test_route_after_analyst_investigate_terminates_at_six_hops() -> None:
+    """investigate mode still has a ceiling — at hop_count == 6 the
+    supervisor refuses any further drill-downs."""
+    state: dict[str, Any] = {
+        "hop_count": 6,
+        "sql_result": {"intent": "investigate"},
+        "analyst": AnalystResponse(
+            drill_down=DrillDownRequest(question="more!", why="...")
+        ),
+    }
+    assert route_after_analyst(state) == END
+
+
+def test_route_after_analyst_data_terminates_at_two_hops() -> None:
+    """Regression: the legacy 2-hop cap still applies to ``data``
+    intent even though Phase 1.3 added the higher investigate budget."""
+    state: dict[str, Any] = {
+        "hop_count": 2,
+        "sql_result": {"intent": "data"},
+        "analyst": AnalystResponse(
+            drill_down=DrillDownRequest(question="more", why="...")
+        ),
+    }
+    assert route_after_analyst(state) == END
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.3 — analyst helpers (drill eligibility + request builder)
+# ---------------------------------------------------------------------------
+
+
+def test_drill_eligibility_under_budget_allows() -> None:
+    from copilot.agents.analyst.nodes import _drill_eligibility
+
+    msg = _drill_eligibility(hop_count=1, hop_budget=2, intent="data")
+    assert "MAY" in msg
+    assert "1 hop" in msg
+
+
+def test_drill_eligibility_at_budget_refuses() -> None:
+    from copilot.agents.analyst.nodes import _drill_eligibility
+
+    msg = _drill_eligibility(hop_count=2, hop_budget=2, intent="data")
+    assert "null" in msg
+    assert "exhausted" in msg
+
+
+def test_drill_eligibility_investigate_encourages_drilling() -> None:
+    """investigate mode uses 'SHOULD' wording so the LLM stays
+    aggressive about chaining queries until the question is answered."""
+    from copilot.agents.analyst.nodes import _drill_eligibility
+
+    msg = _drill_eligibility(hop_count=1, hop_budget=6, intent="investigate")
+    assert "SHOULD" in msg
+    assert "5 hop" in msg  # 6 - 1 = 5 remaining
+
+
+def test_build_request_carries_intent_budget_history() -> None:
+    """The supervisor state's intent, the budget lookup, and the
+    accumulated drill_downs all reach the analyst via AnalystRequest."""
+    from copilot.agents.analyst.nodes import _build_request
+
+    state: dict[str, Any] = {
+        "question": "Why did Beverages drop in 1997?",
+        "sql_result": {
+            "question": "Beverages sales by quarter in 1997",
+            "intent": "investigate",
+            "sql": "SELECT ...",
+            "sql_result": [{"q": 1, "sales": 100}],
+            "answer": "Quarterly sales 100/95/80/65",
+            "row_count": 4,
+            "chart_kind": "line",
+            "chart_spec": None,
+            "dialogue": [],
+        },
+        "hop_count": 2,
+        "drill_downs": [
+            {"question": "Why did Beverages drop in 1997?", "sql_result": []},
+            {"question": "Beverages monthly sales in 1997", "sql_result": []},
+        ],
+    }
+    req = _build_request(state)
+    assert req is not None
+    assert req.intent == "investigate"
+    assert req.hop_budget == 6
+    assert req.drill_history == [
+        "Why did Beverages drop in 1997?",
+        "Beverages monthly sales in 1997",
+    ]
+
+
+def test_analyst_node_scrubs_drill_when_budget_exhausted() -> None:
+    """At hop_count == hop_budget the analyst must scrub any
+    drill_down the LLM still emits, even if the supervisor would
+    later refuse it. Belt-and-suspenders — the AskResponse payload
+    shouldn't claim a drill-down that never happened."""
+    from copilot.agents.analyst import analyst_node
+    from copilot.agents.analyst import nodes as analyst_nodes
+
+    stub_llm = MagicMock()
+    stub_llm.invoke = MagicMock(
+        return_value=AIMessage(
+            content=(
+                '{"anomalies":[],"followups":[],'
+                '"drill_down":{"question":"keep going","why":"..."}}'
+            )
+        )
+    )
+    # Patch ``get_llm`` lookup inside the analyst module.
+    import copilot.agents.analyst.nodes as nodes_mod
+    original_get_llm = nodes_mod.get_llm
+    nodes_mod.get_llm = lambda *a, **k: stub_llm
+    try:
+        state: dict[str, Any] = {
+            "question": "investigate Q",
+            "sql_result": {
+                "question": "investigate Q",
+                "intent": "investigate",
+                "sql": "SELECT 1",
+                "sql_result": [{"n": 1}],
+                "answer": "n=1",
+                "row_count": 1,
+                "chart_kind": "kpi",
+                "chart_spec": None,
+                "dialogue": [],
+            },
+            "hop_count": 6,  # at budget for investigate
+            "drill_downs": [{"question": "investigate Q"}],
+        }
+        out = analyst_node(state)
+        assert out["analyst"] is not None
+        assert out["analyst"].drill_down is None  # scrubbed
+    finally:
+        nodes_mod.get_llm = original_get_llm
+
+
+# ---------------------------------------------------------------------------
 # Compiled-graph flow (end-to-end via the supervisor)
 # ---------------------------------------------------------------------------
 
@@ -321,6 +503,114 @@ async def test_supervisor_drill_down_recurses_once(patch_analyst_llm) -> None:
     assert out["drill_downs"][0]["answer"] == "Germany leads"
     # The final visible answer is the drill-down's
     assert out["sql_result"]["answer"] == "two German customers"
+
+
+async def test_supervisor_investigate_mode_chains_four_drill_downs(
+    patch_analyst_llm,
+) -> None:
+    """Phase 1.3 / ADR 0018 — when ``intent="investigate"``, the
+    supervisor's hop budget jumps to 6 and the analyst can chain
+    multiple drill-downs. The greedy analyst here asks for one on
+    every hop until the budget runs out."""
+    # 6 Specialist results — one per allowed hop. Each is a 2-row data
+    # answer with intent="investigate" so ``_hop_budget_for`` returns 6.
+    sql_results = [
+        {
+            "sql_result": [{"x": i}, {"x": i + 1}],
+            "row_count": 2,
+            "chart_kind": "bar",
+            "intent": "investigate",
+            "answer": f"answer #{i + 1}",
+            "sql": f"-- step {i + 1}",
+            "question": f"step {i + 1} question",
+            "turn_index": 1,
+            "cost": {"llm_calls": 1},
+        }
+        for i in range(6)
+    ]
+    sql_graph = _fake_sql_graph(sql_results)
+    # Analyst asks for a drill-down on every hop (greedy). The
+    # supervisor stops feeding the request to the Specialist once
+    # hop_count reaches the budget.
+    patch_analyst_llm(*[_analyst_response(drill=True) for _ in range(6)])
+
+    supervisor = build_supervisor_graph(sql_graph)
+    out = await supervisor.ainvoke(
+        {
+            "question": "Why is X declining?",
+            "conversation_id": "t1",
+            "hop_count": 0,
+            "drill_downs": [],
+        },
+    )
+
+    # Investigate budget is 6 (vs 2 for plain data).
+    assert sql_graph.ainvoke.call_count == 6
+    assert out["hop_count"] == 6
+    # 5 prior Specialist results land in drill_downs, the 6th is the
+    # current ``sql_result``.
+    assert len(out["drill_downs"]) == 5
+    # The drill-down history starts with the user's original question
+    # and chains each intermediate question.
+    assert out["drill_downs"][0]["question"] == "step 1 question"
+    assert out["sql_result"]["question"] == "step 6 question"
+
+
+async def test_supervisor_data_mode_still_capped_at_two_hops(
+    patch_analyst_llm,
+) -> None:
+    """Regression for Phase 1.3 — plain ``data`` intent must continue
+    to cap at 2 hops even though investigate is allowed 6. This
+    proves the budget is genuinely intent-aware, not a global bump."""
+    sql_graph = _fake_sql_graph([
+        {
+            "sql_result": [{"x": 1}, {"x": 2}],
+            "row_count": 2,
+            "chart_kind": "bar",
+            "intent": "data",
+            "answer": "a",
+            "sql": "s",
+            "question": "q1",
+            "turn_index": 1,
+        },
+        {
+            "sql_result": [{"x": 3}, {"x": 4}],
+            "row_count": 2,
+            "chart_kind": "bar",
+            "intent": "data",
+            "answer": "b",
+            "sql": "s",
+            "question": "q2",
+            "turn_index": 1,
+        },
+        # Third entry would be reached only if the budget leaked; if
+        # we ever observe ainvoke.call_count == 3 here that's a bug.
+        {
+            "sql_result": [{"x": 5}],
+            "row_count": 1,
+            "chart_kind": "kpi",
+            "intent": "data",
+            "answer": "c",
+            "sql": "s",
+            "question": "q3",
+            "turn_index": 1,
+        },
+    ])
+    patch_analyst_llm(
+        _analyst_response(drill=True),
+        _analyst_response(drill=True),
+        _analyst_response(drill=True),
+    )
+
+    supervisor = build_supervisor_graph(sql_graph)
+    out = await supervisor.ainvoke(
+        {"question": "List X", "conversation_id": "t1",
+         "hop_count": 0, "drill_downs": []},
+    )
+
+    # Data mode budget stays at 2 even though analyst keeps asking.
+    assert sql_graph.ainvoke.call_count == 2
+    assert out["hop_count"] == 2
 
 
 async def test_supervisor_drill_down_capped_at_max_hops(patch_analyst_llm) -> None:

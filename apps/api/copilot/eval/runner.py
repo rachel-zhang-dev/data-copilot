@@ -269,20 +269,37 @@ async def run_eval(
     g = graph if graph is not None else build_graph(checkpointer=InMemorySaver())
     result = ExperimentResult(config=cfg)
 
+    # Phase 1.3 — the investigate hop budget lives in
+    # ``copilot.agents.supervisor.HOP_BUDGETS`` rather than in
+    # ``feature_flags`` (it's a topology parameter, not a per-node
+    # toggle). We patch the map in place for the duration of the run
+    # and restore it on exit, mirroring how feature_flags.override
+    # works for the other A/Bs.
+    from copilot.agents import supervisor as _supervisor_mod
+
+    prev_budgets = dict(_supervisor_mod.HOP_BUDGETS)
+    if not cfg.investigate_mode_enabled:
+        # Treat investigate intent like data — single drill-down max.
+        _supervisor_mod.HOP_BUDGETS["investigate"] = _supervisor_mod._DEFAULT_HOP_BUDGET
+
     log.info("running %d cases under config=%s", len(cases), cfg.label)
-    with feature_flags.override(
-        schema_rag_enabled=cfg.schema_rag_enabled,
-        dialogue_context_enabled=cfg.dialogue_context_enabled,
-        retry_budget=cfg.retry_budget_override,
-        analyst_enabled=cfg.analyst_enabled,
-        coverage_check_enabled=cfg.coverage_check_enabled,
-        patterns_detection_enabled=cfg.patterns_detection_enabled,
-    ):
-        for case in cases:
-            log.info("  [%s] %s — %s", cfg.label, case.id, case.category)
-            run = await _invoke_case(case, g, timeout_s=case_timeout_s)
-            grade_report = grade(case, run)
-            result.outcomes.append(CaseOutcome(case=case, run=run, grade=grade_report))
+    try:
+        with feature_flags.override(
+            schema_rag_enabled=cfg.schema_rag_enabled,
+            dialogue_context_enabled=cfg.dialogue_context_enabled,
+            retry_budget=cfg.retry_budget_override,
+            analyst_enabled=cfg.analyst_enabled,
+            coverage_check_enabled=cfg.coverage_check_enabled,
+            patterns_detection_enabled=cfg.patterns_detection_enabled,
+        ):
+            for case in cases:
+                log.info("  [%s] %s — %s", cfg.label, case.id, case.category)
+                run = await _invoke_case(case, g, timeout_s=case_timeout_s)
+                grade_report = grade(case, run)
+                result.outcomes.append(CaseOutcome(case=case, run=run, grade=grade_report))
+    finally:
+        _supervisor_mod.HOP_BUDGETS.clear()
+        _supervisor_mod.HOP_BUDGETS.update(prev_budgets)
 
     log.info(
         "%s done: %d/%d passed (%.1f%%), avg_attempts=%.2f, avg_latency_ms=%.0f",

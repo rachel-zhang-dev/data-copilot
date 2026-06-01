@@ -51,8 +51,16 @@ STRICT RULES:
   seeing this answer. Each must be ANSWERABLE from the same database
   schema. Don't repeat the user's original question.
 * drill_down is only for when the rows obviously hide a more
-  interesting cut. Most turns should have drill_down=null. Never
-  emit drill_down when you were told hop_count >= 1.
+  interesting cut. Most ``data``-mode turns should have
+  drill_down=null. In ``investigate`` mode (open-ended research
+  question), drill_down is the primary tool — each hop should narrow
+  the previous answer down toward a final explanation.
+* Each drill_down.question MUST be sharper / more specific than the
+  previous step. Never repeat a question already in the drill-down
+  history. The supervisor refuses on duplicates anyway, but you
+  shouldn't propose them in the first place.
+* Never emit drill_down when ``hop_count >= hop_budget`` — there is no
+  more budget left to honour it.
 * Keep every string short. Long bullets get truncated downstream.
 """
 
@@ -73,7 +81,10 @@ And wrote this answer:
 Recent conversation context (most recent last):
 {dialogue_context}
 
-This is hop {hop_count} of at most 2 in the agent loop. \
+Mode: {intent}    |    Hop {hop_count} of at most {hop_budget}.
+Drill-down history so far this turn:
+{drill_history}
+
 {drill_down_eligibility}
 
 Respond with the JSON envelope:

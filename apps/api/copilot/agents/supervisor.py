@@ -1,4 +1,4 @@
-"""Supervisor graph (week 12.5).
+"""Supervisor graph (week 12.5 + Phase 1.3).
 
 A thin LangGraph state machine that wires the SQL Specialist (the
 existing week-12 graph) and the Analyst together with deterministic
@@ -11,8 +11,8 @@ Topology::
         ▼
    sql_specialist  ←──────────────┐
         │                          │ drill-down loop
-        ▼                          │ (hop_count ≤ 2)
-   route_after_sql                 │
+        ▼                          │ (budget depends on intent —
+   route_after_sql                 │  see HOP_BUDGETS below)
    ├── END (chitchat / pause /     │
    │       error / row_count <= 1) │
    └── analyst                     │
@@ -27,8 +27,19 @@ ephemeral per request. Multi-turn dialogue still lives in the SQL
 Specialist's PostgresSaver (week 5) which the wrapper passes through
 unchanged.
 
-See ADR 0014 for the full rationale (why rule-based, why hop_count<=2,
-why supervisor compiles standalone).
+Hop budgets (Phase 1.3 / ADR 0018):
+* ``data`` intent          — 2 hops max (initial + 1 drill-down).
+                              This is the week-12.5 default and stays
+                              unchanged; the vast majority of single
+                              questions need no follow-up.
+* ``investigate`` intent   — 6 hops max. The classifier reserved this
+                              label for open-ended research questions
+                              that almost always require chained SQL.
+* anything else            — 2 hops (defensive default).
+
+See ADR 0014 for the original multi-agent rationale (why rule-based,
+why supervisor compiles standalone); ADR 0018 for why the budget
+became intent-dependent in Phase 1.3.
 """
 
 from __future__ import annotations
@@ -46,10 +57,36 @@ from copilot.agents.state import SupervisorState
 log = logging.getLogger(__name__)
 
 
-# Max number of SQL Specialist invocations per user turn — i.e. the
-# initial answer + one optional drill-down. Hard-coded rather than a
-# setting because it is the topology, not a tuning knob.
-MAX_HOP_COUNT = 2
+# Phase 1.3 — hop budget is no longer a single constant. The key is
+# the user's intent (read from the Specialist's final state); the
+# value is the maximum number of Specialist invocations allowed for
+# that intent. Anything not in the map falls back to the conservative
+# 2-hop default that shipped with week 12.5.
+HOP_BUDGETS: dict[str, int] = {
+    "data": 2,
+    "investigate": 6,
+}
+_DEFAULT_HOP_BUDGET = 2
+
+
+# Backwards compatibility for tests / external callers that imported
+# the original constant. Equals the conservative default; INVESTIGATE
+# callers should consult ``HOP_BUDGETS`` directly.
+MAX_HOP_COUNT = _DEFAULT_HOP_BUDGET
+
+
+def _hop_budget_for(state: SupervisorState) -> int:
+    """Look up the max-hop budget for the current turn.
+
+    The Specialist state lives at ``state['sql_result']`` after the
+    first hop; its ``intent`` field tells us whether this is a plain
+    ``data`` turn (2 hops) or an open-ended ``investigate`` turn
+    (6 hops). Defensive default for any unknown / missing intent is
+    the conservative budget.
+    """
+    sql_state = state.get("sql_result") or {}
+    intent = sql_state.get("intent") if isinstance(sql_state, dict) else None
+    return HOP_BUDGETS.get(intent or "", _DEFAULT_HOP_BUDGET)
 
 
 def route_after_sql(state: SupervisorState) -> str:
@@ -107,12 +144,18 @@ def route_after_analyst(state: SupervisorState) -> str:
     """Decide whether to recursively invoke the Specialist.
 
     The Analyst MAY have produced a ``drill_down`` request — we
-    honour it iff ``hop_count`` is still under the budget. The check
-    is belt-and-suspenders with the Analyst's own ``hop_count >= 1``
-    self-restraint; either layer can refuse alone.
+    honour it iff ``hop_count`` is still under the intent-specific
+    budget (Phase 1.3). Belt-and-suspenders with the Analyst's own
+    ``hop_count >=`` self-restraint; either layer can refuse alone.
     """
-    if state.get("hop_count", 0) >= MAX_HOP_COUNT:
-        log.info("supervisor.route_after_analyst: hop budget exhausted → END")
+    budget = _hop_budget_for(state)
+    hops = state.get("hop_count", 0)
+    if hops >= budget:
+        log.info(
+            "supervisor.route_after_analyst: hop budget exhausted (%d/%d) → END",
+            hops,
+            budget,
+        )
         return END
 
     analyst = state.get("analyst")
@@ -120,7 +163,11 @@ def route_after_analyst(state: SupervisorState) -> str:
     if drill is None:
         return END
 
-    log.info("supervisor.route_after_analyst: drill-down requested → sql_specialist")
+    log.info(
+        "supervisor.route_after_analyst: drill-down requested (%d/%d) → sql_specialist",
+        hops,
+        budget,
+    )
     return "sql_specialist"
 
 

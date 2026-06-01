@@ -267,7 +267,7 @@ class AskResponse(BaseModel):
     # for refused turns, or ``verdict="explore"`` with topics +
     # suggested_questions for the schema tour. ``None`` on chitchat or
     # plain data turns where the gate voted ``ok``.
-    intent: Literal["data", "chitchat", "schema_explore"] | None = None
+    intent: Literal["data", "chitchat", "schema_explore", "investigate"] | None = None
     coverage: dict[str, Any] | None = None
     # Phase 1.2 — pattern detector (ADR 0017). Structured statistical
     # findings (outliers / trends) computed deterministically over the
@@ -463,8 +463,22 @@ def _build_response_from_supervisor(
         _build_ask_response(d, conversation_id=conversation_id, debug=debug).model_dump()
         for d in raw_drills
     ]
+
+    # Phase 1.3 — ``intent`` is the user-visible label for the
+    # ORIGINAL question, not whatever the last drill-down's question
+    # happened to classify as. The first specialist invocation (the
+    # one that processed the user's literal input) ends up in
+    # ``drill_downs[0]`` once any drill happens; ``sql_result`` only
+    # carries the original intent if no drill happened. Promote the
+    # right one here so the AskResponse field is stable.
+    final_state = dict(sql_result)
+    if raw_drills:
+        original_intent = raw_drills[0].get("intent")
+        if original_intent is not None:
+            final_state["intent"] = original_intent
+
     return _build_ask_response(
-        sql_result,
+        final_state,
         conversation_id=conversation_id,
         debug=debug,
         analyst=analyst_dump,

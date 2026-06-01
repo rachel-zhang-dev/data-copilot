@@ -178,15 +178,14 @@ def _llm_cost(response: AIMessage, prompt_text: str) -> CostBreakdown:
 
 
 def classify_intent_node(state: AgentState) -> dict[str, Any]:
-    """Decide whether the user is asking a data question, chatting, or
-    exploring the schema.
+    """Decide whether the user is asking a data question, chatting,
+    exploring the schema, or launching a multi-step investigation.
 
-    Three-way classifier (Phase 1.1 added the ``schema_explore`` slot;
-    the prompt emits ``explore`` as the one-word answer, which we map
-    onto the longer ``Intent`` literal here). We use a tiny prompt with
+    Four-way classifier (Phase 1.3 added ``investigate``; Phase 1.1
+    added ``schema_explore``). We use a tiny prompt with
     ``temperature=0`` and parse the first word of the reply. Anything
-    we do not recognise falls back to ``data`` — better to attempt SQL
-    than to refuse politely.
+    we do not recognise falls back to ``data`` — better to attempt
+    SQL than to refuse politely.
     """
     llm = get_llm(temperature=0.0, max_tokens=6)
     response = llm.invoke(
@@ -205,6 +204,8 @@ def classify_intent_node(state: AgentState) -> dict[str, Any]:
             intent = "chitchat"
         elif first in {"explore", "schema_explore", "schema-explore"}:
             intent = "schema_explore"
+        elif first == "investigate":
+            intent = "investigate"
     log.info("classify_intent -> %s", intent)
     return {"intent": intent, "cost": _llm_cost(response, state["question"])}
 
@@ -485,15 +486,19 @@ def finalize_error_node(state: AgentState) -> dict[str, Any]:
 def route_after_classify(state: AgentState) -> str:
     """Pick the next node based on the classifier's verdict.
 
-    Phase 1.1 added a third branch: ``schema_explore`` routes to a
-    dedicated node that produces a tour of the cached profile rather
-    than attempting SQL or canned chitchat.
+    Phase 1.1 added a third branch (``schema_explore`` → tour). Phase
+    1.3 added a fourth label (``investigate``) but it shares the data
+    pipeline — the only difference is the supervisor raises the hop
+    budget so the analyst can chain multiple drill-downs.
     """
     intent = state.get("intent")
     if intent == "chitchat":
         return "small_talk"
     if intent == "schema_explore":
         return "explore_schema"
+    # ``data`` AND ``investigate`` both flow through retrieve_schema →
+    # coverage_check → generate_sql. The supervisor reads
+    # ``sql_result.intent`` to decide whether to allow extra hops.
     return "generate_sql"
 
 

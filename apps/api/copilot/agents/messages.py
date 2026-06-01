@@ -98,5 +98,19 @@ class AnalystRequest(BaseModel):
     decide whether a drill-down would even be novel."""
     hop_count: int = 0
     """How many SQL Specialist invocations have already happened this
-    turn. The Analyst is forbidden from emitting a drill_down when
-    ``hop_count >= 1`` (single drill-down per user turn)."""
+    turn. Compared against ``hop_budget`` to gate further drill-downs."""
+    intent: Literal["data", "chitchat", "schema_explore", "investigate"] | None = None
+    """The classifier's verdict for this turn (Phase 1.3). Used by the
+    Analyst to decide how aggressively to chain drill-downs:
+    ``data`` → at most one; ``investigate`` → up to several."""
+    hop_budget: int = 2
+    """Maximum number of Specialist invocations allowed for this turn.
+    Set by the supervisor from ``HOP_BUDGETS[intent]``. The Analyst
+    refuses to emit a drill-down once ``hop_count >= hop_budget`` —
+    same rule the supervisor enforces, kept in two places so a buggy
+    Analyst can never run away."""
+    drill_history: list[str] = Field(default_factory=list)
+    """Questions already issued this turn, in invocation order:
+    [user's original question, first drill-down, second drill-down, ...].
+    Phase 1.3: the Analyst reads this to AVOID asking a question it
+    has already answered earlier in the same investigation."""

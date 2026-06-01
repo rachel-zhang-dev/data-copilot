@@ -73,6 +73,12 @@ Category = Literal[
     # a measurable statistical pattern (outlier or trend). Used by the
     # patterns_detection A/B to verify the detector fires on real data.
     "has_pattern",
+    # Phase 1.3 / ADR 0018 — open-ended research questions whose answer
+    # requires chaining multiple SQL queries. The intent classifier
+    # should route them to ``investigate``, the supervisor should let
+    # the analyst chain >1 drill-down, and the final response should
+    # carry multiple entries in ``drill_downs``.
+    "investigate",
 ]
 """The buckets we slice metrics by. Adding a new bucket means both
 updating this Literal AND adding cases to cases.yaml.
@@ -137,11 +143,22 @@ class Expect:
     case. ``None`` skips the assertion (the default for existing
     cases). Pair with ``unanswerable`` / ``schema_explore`` categories."""
 
-    expected_intent: Literal["data", "chitchat", "schema_explore"] | None = None
-    """``intent`` the three-way classifier is expected to return.
-    ``None`` skips the assertion. Useful on ``schema_explore`` cases
-    where we want to lock in that classify_intent routed correctly,
-    independently of whatever the downstream node decided."""
+    expected_intent: (
+        Literal["data", "chitchat", "schema_explore", "investigate"] | None
+    ) = None
+    """``intent`` the classifier is expected to return. ``None`` skips
+    the assertion. Useful on ``schema_explore`` / ``investigate``
+    cases where we want to lock in classifier routing independently
+    of whatever the downstream nodes decided."""
+
+    expected_drill_count_min: int | None = None
+    """Phase 1.3 / ADR 0018. Minimum number of recursive Specialist
+    invocations the supervisor should perform. ``None`` skips the
+    assertion (most cases stay at the default 0 / 1 hop).
+
+    ``investigate`` cases set this to e.g. 2 to assert the analyst
+    actually chained at least one drill-down — proves the higher
+    hop budget had effect and the A/B comparison is meaningful."""
 
     # Phase 1.2 / ADR 0017 — pattern detector assertions.
     expected_pattern_kinds: tuple[str, ...] = ()
@@ -189,10 +206,12 @@ _VALID_EXPECT_KEYS = {
     # Phase 1.2
     "expected_pattern_kinds",
     "expected_pattern_min_count",
+    # Phase 1.3
+    "expected_drill_count_min",
 }
 
 _VALID_VERDICTS = {"ok", "refuse", "explore"}
-_VALID_INTENTS = {"data", "chitchat", "schema_explore"}
+_VALID_INTENTS = {"data", "chitchat", "schema_explore", "investigate"}
 _VALID_PATTERN_KINDS = {"outlier", "trend"}
 
 
@@ -257,6 +276,13 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
                 f"case {case_id!r}: expected_pattern_min_count must be "
                 f"a non-negative int, got {expected_pattern_min_count!r}"
             )
+    expected_drill_count_min = raw.get("expected_drill_count_min")
+    if expected_drill_count_min is not None:
+        if not isinstance(expected_drill_count_min, int) or expected_drill_count_min < 0:
+            raise ValueError(
+                f"case {case_id!r}: expected_drill_count_min must be "
+                f"a non-negative int, got {expected_drill_count_min!r}"
+            )
 
     expect = Expect(
         sql_must_contain=tuple(raw.get("sql_must_contain", []) or []),
@@ -270,6 +296,7 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         expected_intent=expected_intent,
         expected_pattern_kinds=tuple(expected_pattern_kinds_raw),
         expected_pattern_min_count=expected_pattern_min_count,
+        expected_drill_count_min=expected_drill_count_min,
     )
 
     has_any = (
@@ -284,6 +311,7 @@ def _parse_expect(raw: dict[str, Any], case_id: str) -> Expect:
         or expect.expected_intent is not None
         or expect.expected_pattern_kinds
         or expect.expected_pattern_min_count is not None
+        or expect.expected_drill_count_min is not None
     )
     if not has_any:
         raise ValueError(
