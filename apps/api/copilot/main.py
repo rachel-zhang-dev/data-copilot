@@ -296,6 +296,14 @@ class AskResponse(BaseModel):
     # without re-running the stats. ``None`` / empty when the result
     # set was too small or no numeric column existed.
     patterns: list[dict[str, Any]] | None = None
+    # Phase 2.3 — SQL critic verdict (ADR 0021). One additional LLM
+    # call after ``execute_sql`` decides whether the SQL truly
+    # answers the question. Shape:
+    # ``{verdict: "ok"|"suspicious"|"wrong", reason: str, concerns: [...]}``.
+    # FE renders a ⚠️ "low confidence" badge when verdict is not ``ok``;
+    # ``wrong`` verdicts trigger one self-healing retry before the
+    # badge is shown. ``None`` on chitchat / refused / explore / etc.
+    critic: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +697,7 @@ def _build_ask_response(
             intent=result.get("intent"),
             coverage=result.get("coverage"),
             patterns=result.get("patterns"),
+            critic=result.get("critic"),
         )
 
     return AskResponse(
@@ -712,6 +721,7 @@ def _build_ask_response(
         intent=result.get("intent"),
         coverage=result.get("coverage"),
         patterns=result.get("patterns"),
+        critic=result.get("critic"),
     )
 
 

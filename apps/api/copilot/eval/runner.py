@@ -291,6 +291,7 @@ async def run_eval(
             analyst_enabled=cfg.analyst_enabled,
             coverage_check_enabled=cfg.coverage_check_enabled,
             patterns_detection_enabled=cfg.patterns_detection_enabled,
+            critic_enabled=cfg.critic_enabled,
         ):
             for case in cases:
                 log.info("  [%s] %s — %s", cfg.label, case.id, case.category)

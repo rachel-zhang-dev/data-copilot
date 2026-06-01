@@ -51,6 +51,13 @@ COVERAGE_CHECK_ENABLED: bool = True
 # ``summarize_result``. The sixth A/B flips this.
 PATTERNS_DETECTION_ENABLED: bool = True
 
+# Phase 2.3 — SQL verification loop / critic (ADR 0021). When False,
+# ``critique_sql_node`` short-circuits to verdict=ok and the graph
+# skips straight from ``execute_sql`` to ``summarize_result``. The
+# eighth A/B flips this to measure how many semantic errors the
+# critic catches across the eval set.
+CRITIC_ENABLED: bool = True
+
 
 @contextmanager
 def override(
@@ -61,6 +68,7 @@ def override(
     analyst_enabled: bool | None = None,
     coverage_check_enabled: bool | None = None,
     patterns_detection_enabled: bool | None = None,
+    critic_enabled: bool | None = None,
 ) -> Iterator[None]:
     """Flip flags for the duration of the ``with`` block.
 
@@ -69,13 +77,14 @@ def override(
     some were set.
     """
     global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED, ANALYST_ENABLED
-    global COVERAGE_CHECK_ENABLED, PATTERNS_DETECTION_ENABLED
+    global COVERAGE_CHECK_ENABLED, PATTERNS_DETECTION_ENABLED, CRITIC_ENABLED
 
     prev_rag = SCHEMA_RAG_ENABLED
     prev_dlg = DIALOGUE_CONTEXT_ENABLED
     prev_analyst = ANALYST_ENABLED
     prev_coverage = COVERAGE_CHECK_ENABLED
     prev_patterns = PATTERNS_DETECTION_ENABLED
+    prev_critic = CRITIC_ENABLED
     prev_budget = dict(_nodes_mod.RETRY_BUDGET)
 
     if schema_rag_enabled is not None:
@@ -88,6 +97,8 @@ def override(
         COVERAGE_CHECK_ENABLED = coverage_check_enabled
     if patterns_detection_enabled is not None:
         PATTERNS_DETECTION_ENABLED = patterns_detection_enabled
+    if critic_enabled is not None:
+        CRITIC_ENABLED = critic_enabled
     if retry_budget is not None:
         # Mutate in place so existing references to the dict (e.g. in
         # tests that imported the module attribute) see the change.
@@ -102,5 +113,6 @@ def override(
         ANALYST_ENABLED = prev_analyst
         COVERAGE_CHECK_ENABLED = prev_coverage
         PATTERNS_DETECTION_ENABLED = prev_patterns
+        CRITIC_ENABLED = prev_critic
         _nodes_mod.RETRY_BUDGET.clear()
         _nodes_mod.RETRY_BUDGET.update(prev_budget)

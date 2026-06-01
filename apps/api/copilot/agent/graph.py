@@ -80,6 +80,11 @@ from copilot.agent.coverage import (
     explain_uncovered_node,
     route_after_coverage,
 )
+from copilot.agent.critic import (
+    critique_sql_node,
+    record_critic_rejection_node,
+    route_after_critic,
+)
 from copilot.agent.dialogue import append_to_dialogue_node, reset_per_turn_node
 from copilot.agent.explore import explore_schema_node
 from copilot.agent.patterns.node import detect_patterns_node
@@ -120,6 +125,11 @@ def build_graph(
     workflow.add_node("check_risk", check_risk_node)
     workflow.add_node("await_confirmation", await_confirmation_node)
     workflow.add_node("execute_sql", nodes.execute_sql_node)
+    # Phase 2.3 / ADR 0021 — critic + the tiny bookkeeping node that
+    # converts a "wrong" verdict into a proper Attempt before looping
+    # back to generate_sql. Order matters at the wiring step below.
+    workflow.add_node("critique_sql", critique_sql_node)
+    workflow.add_node("record_critic_rejection", record_critic_rejection_node)
     workflow.add_node("summarize_result", nodes.summarize_result_node)
     workflow.add_node("detect_patterns", detect_patterns_node)
     workflow.add_node("visualize", visualize_node)
@@ -196,15 +206,41 @@ def build_graph(
         },
     )
 
+    # Phase 2.3 — on execute success, divert to the critic node before
+    # summarizing. The router's contract is unchanged (it still returns
+    # the string "summarize_result" to mean "the SQL is good"); we
+    # remap that destination to "critique_sql" so the critic runs
+    # first. This keeps ``nodes.route_after_execute`` decoupled from
+    # the critic — turning the critic off via the feature flag is then
+    # a no-op on the routing side; the critic node itself returns
+    # verdict=ok and ``route_after_critic`` falls through to summarize.
     workflow.add_conditional_edges(
         "execute_sql",
         nodes.route_after_execute,
         {
-            "summarize_result": "summarize_result",
+            "summarize_result": "critique_sql",
             "generate_sql": "generate_sql",
             "finalize_error": "finalize_error",
         },
     )
+
+    # Phase 2.3 — critic fan-out. Two destinations:
+    #   * ``summarize_result``         — verdict ok / suspicious, OR
+    #                                    wrong but no retry budget left.
+    #   * ``record_critic_rejection`` — verdict wrong with retry budget;
+    #                                    this tiny node converts the
+    #                                    verdict into an Attempt record
+    #                                    + error string and the edge
+    #                                    below loops to generate_sql.
+    workflow.add_conditional_edges(
+        "critique_sql",
+        route_after_critic,
+        {
+            "summarize_result": "summarize_result",
+            "record_critic_rejection": "record_critic_rejection",
+        },
+    )
+    workflow.add_edge("record_critic_rejection", "generate_sql")
 
     # Week 8 inserts ``visualize`` only on the data-success path —
     # chitchat / terminal-error / refused / explored branches don't

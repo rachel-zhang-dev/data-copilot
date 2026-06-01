@@ -27,6 +27,8 @@ from copilot.agent.insight import insight_to_state, parse_insight
 from copilot.agent.prompts import (
     CLASSIFY_INTENT_SYSTEM,
     CONVERSATION_HISTORY_TEMPLATE,
+    CRITIC_FIX_SYSTEM,
+    CRITIC_FIX_USER_TEMPLATE,
     GENERATE_SQL_SYSTEM,
     GENERATE_SQL_USER_TEMPLATE,
     RETRY_SQL_SYSTEM,
@@ -60,6 +62,14 @@ RETRY_BUDGET: dict[ErrorClass, int] = {
     "execution_failed": 2,
     "unsafe_sql": 1,
     "fatal": 0,
+    # Phase 2.3 / ADR 0021 — semantic-failure budget. One retry is
+    # enough: the critic gave the LLM specific concerns; if the
+    # rewrite still doesn't satisfy them, looping further usually
+    # converges on the same wrong pattern. The next pass after a
+    # second critic-wrong verdict downgrades to "suspicious" and
+    # shows the answer with a low-confidence badge (see
+    # ``route_after_critic``).
+    "critic_rejected": 1,
 }
 """How many retries each error class is allowed.
 
@@ -78,14 +88,16 @@ HARD_RETRY_CEILING = 5
 def classify_error(error: str) -> ErrorClass:
     """Map an ``error`` string to its retry class.
 
-    The prefixes match what ``validate_sql_node`` and
-    ``execute_sql_node`` produce, so the mapping is purely string-based
-    and does not need to introspect exceptions.
+    The prefixes match what ``validate_sql_node``, ``execute_sql_node``,
+    and ``record_critic_rejection_node`` produce, so the mapping is
+    purely string-based and does not need to introspect exceptions.
     """
     if error.startswith("unsafe_sql:"):
         return "unsafe_sql"
     if error.startswith("execution_failed:"):
         return "execution_failed"
+    if error.startswith("critic_rejected:"):
+        return "critic_rejected"
     return "fatal"
 
 
@@ -254,16 +266,38 @@ def generate_sql_node(state: AgentState) -> dict[str, Any]:
 
     if this_turn_attempts:
         last = this_turn_attempts[-1]
-        sys_msg = RETRY_SQL_SYSTEM
-        user_msg = RETRY_SQL_USER_TEMPLATE.format(
-            schema=schema,
-            history=history_block,
-            question=state["question"],
-            last_sql=last["sql"],
-            last_error=last["error"],
-            attempt_no_prev=len(this_turn_attempts),
-            attempt_no=len(this_turn_attempts) + 1,
-        )
+        # Phase 2.3 — the retry prompt branches on error_class. A
+        # critic-driven retry needs different framing ("a reviewer
+        # found this semantically wrong") than an execution-driven
+        # retry ("Postgres rejected this"). The two paths share the
+        # rest of the inputs (schema, history, question).
+        if last["error_class"] == "critic_rejected":
+            critic = state.get("critic") or {}
+            concerns = critic.get("concerns") or []
+            sys_msg = CRITIC_FIX_SYSTEM
+            user_msg = CRITIC_FIX_USER_TEMPLATE.format(
+                schema=schema,
+                history=history_block,
+                question=state["question"],
+                last_sql=last["sql"],
+                verdict=critic.get("verdict", "wrong"),
+                reason=critic.get("reason", last["error"]),
+                concerns=("\n".join(f"  - {c}" for c in concerns)
+                          if concerns else "  (none specified)"),
+                attempt_no_prev=len(this_turn_attempts),
+                attempt_no=len(this_turn_attempts) + 1,
+            )
+        else:
+            sys_msg = RETRY_SQL_SYSTEM
+            user_msg = RETRY_SQL_USER_TEMPLATE.format(
+                schema=schema,
+                history=history_block,
+                question=state["question"],
+                last_sql=last["sql"],
+                last_error=last["error"],
+                attempt_no_prev=len(this_turn_attempts),
+                attempt_no=len(this_turn_attempts) + 1,
+            )
         log.info(
             "generate_sql RETRY #%d (last_class=%s)",
             len(this_turn_attempts) + 1,

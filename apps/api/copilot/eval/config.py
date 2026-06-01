@@ -70,6 +70,16 @@ class ExperimentConfig:
     monkey-patches the map for the duration of the run, so production
     code doesn't need an extra env var."""
 
+    critic_enabled: bool = True
+    """When False, ``critique_sql_node`` short-circuits to verdict=ok
+    so the graph behaves as if Phase 2.3 had never shipped (data
+    success path goes straight from ``execute_sql`` to
+    ``summarize_result``). Used by A8 (the critic A/B) to measure how
+    many semantic errors the critic catches across the eval set —
+    cases with category ``semantic_trap`` should fail under baseline
+    and pass under treatment; everything else should stay flat
+    modulo one extra LLM call's worth of cost / latency."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -150,4 +160,17 @@ WITHOUT_INVESTIGATE_MODE = ExperimentConfig(
         "works (intent labels remain) so other categories are flat."
     ),
     extra_tags=("a7", "investigate_mode_off"),
+)
+
+WITHOUT_CRITIC = ExperimentConfig(
+    label="critic_off",
+    critic_enabled=False,
+    notes=(
+        "Phase 2.3 critic disabled — ``critique_sql_node`` short-"
+        "circuits to verdict=ok and the data-success path skips the "
+        "extra LLM call. ``semantic_trap`` category cases should "
+        "regress (no critic to catch the JOIN-direction / wrong-"
+        "filter mistakes); other categories should stay flat."
+    ),
+    extra_tags=("a8", "critic_off"),
 )

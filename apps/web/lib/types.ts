@@ -80,6 +80,17 @@ export interface Coverage {
   topics?: CoverageTopic[];
 }
 
+// Phase 2.3 — SQL critic verdict (ADR 0021).
+export type CriticVerdict = "ok" | "suspicious" | "wrong";
+
+export interface Critic {
+  verdict: CriticVerdict;
+  // One-sentence explanation. Cited from SQL / rows by the critic.
+  reason: string;
+  // 0-3 specific issues the writer might want to revisit.
+  concerns: string[];
+}
+
 export interface AskResponse {
   answer: string;
   conversation_id: string;
@@ -106,6 +117,10 @@ export interface AskResponse {
   // already merged into ``insight.bullets`` so this is for future
   // chart annotations / badges.
   patterns: Array<Record<string, unknown>> | null;
+  // Phase 2.3 — SQL critic verdict. Present on data-success turns
+  // (the only path the critic runs on); the FE shows a low-
+  // confidence badge when verdict is "suspicious" or "wrong".
+  critic: Critic | null;
 }
 
 // ---------------------------------------------------------------------------

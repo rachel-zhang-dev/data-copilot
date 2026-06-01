@@ -30,6 +30,7 @@ from copilot.eval.cases import DEFAULT_CASES_PATH, load_cases
 from copilot.eval.experiments import (
     run_analyst_ab,
     run_coverage_check_ab,
+    run_critic_ab,
     run_dialogue_context_ab,
     run_investigate_mode_ab,
     run_patterns_detection_ab,
@@ -62,6 +63,8 @@ _EXPERIMENTS = {
     "patterns_detection": run_patterns_detection_ab,
     # Phase 1.3 / ADR 0018
     "investigate_mode": run_investigate_mode_ab,
+    # Phase 2.3 / ADR 0021
+    "critic": run_critic_ab,
 }
 
 

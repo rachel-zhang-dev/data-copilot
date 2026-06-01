@@ -7,6 +7,7 @@ import { AgentTrace } from "./AgentTrace";
 import { ChartRenderer } from "./ChartRenderer";
 import { CostPanel } from "./CostPanel";
 import { CoverageRefusal } from "./CoverageRefusal";
+import { CriticBadge } from "./CriticBadge";
 import { InsightPanel } from "./InsightPanel";
 import { PendingConfirmation } from "./PendingConfirmation";
 import { SchemaTour } from "./SchemaTour";
@@ -84,6 +85,10 @@ export function ChatTurn({
               {result.answer && (
                 <p className="text-base text-(--color-fg)">{result.answer}</p>
               )}
+              {/* Phase 2.3 — critic badge sits ABOVE the insight so users
+                  see the "double-check this" warning before they read the
+                  numbers it's warning about. Renders nothing on ok. */}
+              <CriticBadge critic={result.critic} />
               <InsightPanel insight={result.insight} />
               <ChartRenderer
                 kind={result.chart_kind}

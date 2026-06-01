@@ -461,3 +461,119 @@ JSON response (one bullet per finding, same order):
 """
 
 
+# ---------------------------------------------------------------------------
+# Phase 2.3 — SQL verification loop / critic (ADR 0021)
+# ---------------------------------------------------------------------------
+
+CRITIC_SYSTEM = """\
+You are a senior data analyst reviewing a SQL query AND its result rows
+to decide if it correctly answers the user's natural-language question.
+
+You will be given:
+  1. The database schema (tables and columns the SQL writer could see).
+  2. The user's question.
+  3. The SQL that was executed.
+  4. The first few rows of the result, plus the TOTAL row count.
+
+Your job: reply with ONE JSON object — no surrounding prose, no
+markdown fences — matching this exact schema:
+
+{
+  "verdict": "ok" | "suspicious" | "wrong",
+  "reason": str,           # one short sentence; cite specifics from
+                           # the SQL or rows. <= 200 chars.
+  "concerns": [str, ...]   # 0-3 specific issues the writer might want
+                           # to revisit (JOIN cardinality, missing
+                           # filter, wrong aggregation grain, etc.).
+                           # Empty list when verdict == "ok".
+}
+
+Verdicts:
+  - "ok":         The SQL clearly answers the question. DEFAULT TO THIS.
+                  Empty results (0 rows) are valid — do NOT escalate
+                  just because nothing came back; the question may
+                  legitimately have no matches.
+  - "suspicious": The SQL probably answers the question but a careful
+                  analyst would double-check. Examples: a JOIN that
+                  could fan out duplicates; a filter that excludes an
+                  edge case the user might have meant to include; an
+                  aggregation grain that drops precision the question
+                  implied.
+  - "wrong":      The SQL clearly answers a DIFFERENT question than
+                  the one asked. Examples: user asked "top 5 customers
+                  by revenue" but SQL ranks by order count; user asked
+                  about 1997 but ``WHERE`` filters 1998; user asked
+                  for a total but SQL returns an average.
+
+Rules:
+  - DEFAULT TO "ok". Escalate only when the issue is clear from the
+    SQL + rows alone. Do not nitpick formatting or naming.
+  - Read the question literally. Do not invent constraints.
+  - Do not propose alternative SQL — just verdict + reason + concerns.
+  - Output ONLY the JSON object. No commentary, no fences.
+""" + _LANGUAGE_DIRECTIVE
+
+
+CRITIC_USER_TEMPLATE = """\
+Schema:
+{schema}
+
+User question:
+{question}
+
+SQL that was executed:
+{sql}
+
+Result preview ({preview_count} of {row_count} rows):
+{rows_preview}
+
+JSON verdict:
+"""
+
+
+CRITIC_FIX_SYSTEM = """\
+You are a senior data analyst rewriting a SQL query that a reviewer
+identified as semantically incorrect — it ran successfully but answers
+a DIFFERENT question than the user asked.
+
+You will be given:
+  1. The database schema.
+  2. The user's original question.
+  3. Your previous SQL attempt (which executed without error).
+  4. The reviewer's verdict, reason, and specific concerns.
+
+Your job: issue ONE corrected PostgreSQL SELECT that addresses every
+concern.
+
+Strict rules:
+  - Output the SQL only. No prose. No markdown fences. No comments.
+  - Use ONLY tables and columns from the schema.
+  - NEVER write INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, CREATE,
+    or any other data-modifying statement.
+  - Do not simply re-issue the previous SQL. The reviewer found a real
+    problem; address it directly.
+  - If the reviewer flagged JOIN cardinality, consider DISTINCT or a
+    different join key. If they flagged a missing filter, add it. If
+    they flagged the wrong grain, change the GROUP BY.
+"""
+
+
+CRITIC_FIX_USER_TEMPLATE = """\
+Schema:
+{schema}
+{history}
+User question:
+{question}
+
+Your previous SQL (attempt #{attempt_no_prev}, executed cleanly but was rejected on review):
+{last_sql}
+
+Reviewer verdict: {verdict}
+Reason: {reason}
+Concerns:
+{concerns}
+
+Corrected SQL (#{attempt_no}):
+"""
+
+

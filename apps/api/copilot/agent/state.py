@@ -68,14 +68,27 @@ a friendly "this DB doesn't have X, you might want to ask Y"
 response instead of a hallucinated SQL."""
 
 
-ErrorClass = Literal["unsafe_sql", "execution_failed", "fatal", "user_rejected"]
+ErrorClass = Literal[
+    "unsafe_sql",
+    "execution_failed",
+    "fatal",
+    "user_rejected",
+    "critic_rejected",
+]
 """Categorisation of a node failure. Used by ``can_retry`` to decide
 whether the agent loops back to ``generate_sql`` or terminates with a
 user-facing error.
 
 ``user_rejected`` (week 7) is the verdict when the user declined the
 human-in-the-loop confirmation prompt. It is terminal — there is
-nothing the agent can retry against a user saying "no"."""
+nothing the agent can retry against a user saying "no".
+
+``critic_rejected`` (Phase 2.3 / ADR 0021) is the verdict when the
+critic node decides the SQL ran cleanly but answers a DIFFERENT
+question than the user asked. The retry prompt for this class is
+distinct from the execution-failure prompt because the SQL didn't
+"fail" — it was semantically wrong, and the LLM needs different
+guidance to fix it (see ``prompts.CRITIC_FIX_SYSTEM``)."""
 
 
 class Attempt(TypedDict):
@@ -258,6 +271,31 @@ class AgentState(TypedDict, total=False):
     ``bar`` / ``line`` / ``grouped_bar`` results. ``None`` for
     ``kpi`` / ``table`` (the UI renders those directly from
     ``sql_result``) and outside the data success path."""
+
+    # ---------- Outputs added in Phase 2.3 (ADR 0021) ----------
+    critic: dict[str, Any]
+    """Verdict from ``critique_sql_node`` on whether the executed SQL
+    actually answers the user's question.
+
+    Shape::
+
+        {
+            "verdict": "ok" | "suspicious" | "wrong",
+            "reason": str,           # one-sentence why
+            "concerns": [str, ...],  # 0-3 specific issues
+        }
+
+    ``ok``         → silent pass-through.
+    ``suspicious`` → FE renders a "⚠ low confidence" badge alongside
+                     the answer (the answer itself still shows).
+    ``wrong``      → routed back to ``generate_sql`` via
+                     ``record_critic_rejection_node``; the rewritten
+                     SQL gets its own critic pass. After one retry the
+                     verdict is downgraded to ``suspicious`` and the
+                     answer is shown rather than blocked.
+
+    ``None`` outside the data success path (chitchat / refused /
+    explore / execution-failed turns never reach the critic)."""
 
     # ---------- Outputs added in Phase 1.2 (ADR 0017) ----------
     patterns: list[dict[str, Any]]

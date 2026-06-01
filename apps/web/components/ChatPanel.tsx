@@ -203,6 +203,7 @@ export function ChatPanel({
               intent: null,
               coverage: null,
               patterns: null,
+              critic: null,
             },
             pending: null,
             error: null,
