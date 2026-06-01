@@ -11,6 +11,73 @@ and modern Python AI app stacks. Read this side-by-side with the source.
 
 ---
 
+## 0. What this guide is and isn't (read first)
+
+This tutorial walks the codebase **as it stood at the end of week 5**
+— the single-graph, single-LLM-call-per-turn version. It is still the
+right starting point for anyone learning LangGraph because each
+concept is introduced once, in isolation.
+
+The current codebase has grown considerably past week 5. Rather than
+rewriting this guide every release (which would inevitably go stale
+again), this section maps each new module to a sentence + an ADR
+pointer. Read this section once, then dive into the file you care
+about.
+
+### What's been added since this guide was written
+
+| Phase | Modules | What it adds | ADR |
+|---|---|---|---|
+| Week 7 | `agent/risk.py` | Postgres EXPLAIN cost gate + HITL `interrupt()` / `Command(resume=...)` | [0008](decisions/0008-human-in-the-loop.md) |
+| Week 8 | `agent/visualize.py`, `agent/insight.py` | Deterministic chart-kind picker (5 buckets) + Vega-Lite spec builder; structured `Insight` JSON envelope | [0009](decisions/0009-visualization-and-insight.md) |
+| Week 9 | `cache.py`, `cost.py`, `embeddings.py` `tenacity` wrapper | TTL embedding cache; per-turn `CostBreakdown` reducer in state; 429/5xx retries | [0010](decisions/0010-caching-and-resilience.md) |
+| Week 10 | `apps/web/**`, `main.py` `/ask/stream` | Next.js 15 chat UI + SSE streaming endpoint; Route Handler proxies | [0011](decisions/0011-frontend-and-streaming.md) |
+| Week 11 | Multi-stage `Dockerfile`s, `fly.toml` × 2, Prometheus instrumentator, Redis backend for `cache.py` | Fly.io deploy + observability + cache swap-via-env-var | [0012](decisions/0012-deployment-and-observability.md) |
+| Week 12.5 | `agents/supervisor.py`, `agents/analyst.py` | Rule-based supervisor wraps the SQL Specialist; Analyst worker can recurse for drill-downs | [0014](decisions/0014-multi-agent-supervisor-analyst.md) |
+| Phase 1.1 | `agent/coverage.py`, `agent/explore.py`, `profiler.py`, `schema_profiles` table | Schema-coverage gate ("we can't answer this") + 4-way intent (adds `schema_explore`) | [0016](decisions/0016-schema-profiling-and-coverage.md) |
+| Phase 1.2 | `agent/patterns/` package | Deterministic outlier + trend detectors; LLM only renders bullets | [0017](decisions/0017-pattern-detection.md) |
+| Phase 1.3 | `route_after_classify` + supervisor `HOP_BUDGETS` | 4th intent `investigate` with a 6-hop drill budget | [0018](decisions/0018-investigate-mode.md) |
+| Phase 1.4 | `saved.py`, `apps/web/components/{PinButton,SavedDrawer}.tsx` | One-click "pin chat" + sidebar drawer + replay | [0019](decisions/0019-saved-conversations.md) |
+| Phase 2.1 / 2.1.1 / 2.2 / 2.3.1 | `dashboards.py`, `data/seed/05-dashboards.sql`, `apps/web/components/{Dashboard*,AddToDashboardButton,CriticBadge}.tsx`, `apps/web/app/dashboards/` | Snapshot-based dashboard cards + 12-col grid + drag/resize/rename + back-link to source chat + critic verdict preserved on cards | [0020](decisions/0020-dashboard-cards.md), [0021](decisions/0021-sql-verification-loop.md) |
+| Phase 2.3 | `agent/critic.py`, `record_critic_rejection_node`, `CRITIC_*` prompts | 7th defensive layer — second LLM reviews executed SQL + rows for semantic correctness | [0021](decisions/0021-sql-verification-loop.md) |
+
+### Where to read code in the order it executes
+
+For a request to `POST /ask` against a data question, today's path is:
+
+```
+main.ask()
+  └─ supervisor.ainvoke() ─ agents/supervisor.py
+      └─ specialist.ainvoke() ─ agent/graph.py
+          ├─ reset_per_turn  ─ agent/dialogue.py
+          ├─ classify_intent ─ agent/nodes.py:classify_intent_node
+          ├─ retrieve_schema ─ agent/retriever.py
+          ├─ coverage_check  ─ agent/coverage.py        ← layer ❶
+          ├─ generate_sql    ─ agent/nodes.py
+          ├─ validate_sql    ─ agent/sql_safety.py      ← layer ❸
+          ├─ check_risk      ─ agent/risk.py            ← layer ❹
+          ├─ execute_sql     ─ agent/nodes.py + db.py   ← layer ❻
+          ├─ critique_sql    ─ agent/critic.py          ← layer ❼
+          ├─ summarize_result─ agent/nodes.py + insight.py
+          ├─ detect_patterns ─ agent/patterns/node.py
+          ├─ visualize       ─ agent/visualize.py
+          ├─ append_to_dialogue + compact_history
+          └─ END
+      └─ analyst.ainvoke()  ─ agents/analyst.py  (optional drill-down)
+  └─ AskResponse projection ─ main._build_ask_response
+```
+
+The single best file to read for the "shape" of the graph is
+[`apps/api/copilot/agent/graph.py`](../apps/api/copilot/agent/graph.py).
+It's ~230 lines and it's the **only** place where the wiring lives;
+each node implementation is one short function in its own module.
+
+The architecture diagram + 7-layer table in
+[`./architecture.md`](architecture.md) captures the post-Phase-2.3
+end state if you'd rather see one picture than read 21 ADRs.
+
+---
+
 ## 1. The big picture
 
 ```

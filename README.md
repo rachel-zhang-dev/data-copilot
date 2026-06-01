@@ -3,8 +3,8 @@
 > Text-to-SQL agent that **knows what it knows** — refuses gracefully when the schema can't answer, spots outliers + trends in every result, chains multi-step queries on "why" questions, saves the good conversations to a sidebar drawer, and lets you grid them into dashboards. Built on LangGraph + FastAPI + Next.js, deployed on Fly.io.
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-480%20passing-brightgreen.svg)](#testing)
-[![ADRs](https://img.shields.io/badge/ADRs-20-blue.svg)](docs/decisions/)
+[![Tests](https://img.shields.io/badge/tests-562%20passing-brightgreen.svg)](#testing)
+[![ADRs](https://img.shields.io/badge/ADRs-21-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
@@ -59,7 +59,7 @@ Then you pin the good ones to a sidebar drawer, and grid them into dashboards.
 | 🔬 **Investigate mode** | Open-ended research questions ("why is X declining", "deep dive into Y") get a fourth classifier intent and a 6-hop drill-down budget so the analyst can chain multiple sub-queries before answering — plain data questions stay on the cheap 2-hop ceiling ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 📌 **Saved conversations** | One-click pin on any chat → it lands in a left-rail drawer; click to replay full history and keep talking. Zero-friction (no dialog), with inline title editing in the sidebar ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
 | 📐 **Dashboard cards** | Click "📌 Add to dashboard" on any answer → snapshot card lands on a 12-column react-grid-layout. Drag, resize, rename inline. Each card carries a "View source chat →" deep-link back to the conversation that produced it. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
-| 🛡️ **Semantic SQL verification** | A critic LLM reviews every executed SQL + its rows; flags answers as `ok` / `suspicious` / `wrong`. `wrong` triggers one self-healing retry with reviewer feedback; `suspicious` surfaces a ⚠ low-confidence badge so the user knows to double-check. Catches the dangerous "SQL ran fine but answered the wrong question" class that the other six defensive layers miss ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
+| 🛡️ **Semantic SQL verification** | A critic LLM reviews every executed SQL + its rows; flags answers as `ok` / `suspicious` / `wrong`. `wrong` triggers one self-healing retry with reviewer feedback; `suspicious` surfaces a ⚠ low-confidence badge so the user knows to double-check. Measured uplift +2.0pp on the existing 50-case eval set ([report](docs/eval/20260601-143155-critic.md)); a dedicated `semantic_trap` category is the next eval expansion ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
 | 🔍 **Comparative eval harness** | 50 hand-written cases across 11 categories × **8 A/B experiments** (RAG on/off, self-heal, dialogue context, analyst, coverage_check, patterns_detection, investigate_mode, critic); markdown reports archived per run under [`docs/eval/`](docs/eval/) |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
 | 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel, saved-conversations drawer |
@@ -237,22 +237,45 @@ into a single synthetic entry. The threshold is configurable via
 `COMPACTION_THRESHOLD_TOKENS` (default 4000). Per-turn retry
 budgets reset between turns so a follow-up always starts fresh.
 
-### Eval harness (week 6)
+### Eval harness (week 6, extended through Phase 2.3)
 
-A reproducible A/B harness measures whether each Week 3-5 feature
-actually moves the metrics. 32 hand-written cases × 4 metrics ×
-3 A/B experiments yield committable markdown reports under
-[`docs/eval/`](docs/eval/).
+A reproducible A/B harness measures whether each new feature
+actually moves the metrics. **50 hand-written cases × 8 A/B
+experiments**, each pairing the production default against a
+"feature off" baseline so the per-feature contribution is a
+measured number, not a claim. Markdown reports archived per run
+under [`docs/eval/`](docs/eval/).
 
 ```bash
-./scripts/dev.sh eval                          # all 3 experiments
-./scripts/dev.sh eval --experiment schema_rag  # one A/B
+./scripts/dev.sh eval                          # all 8 experiments
+./scripts/dev.sh eval --experiment critic      # one A/B (~25 min)
+./scripts/dev.sh eval --experiment schema_rag
 ./scripts/dev.sh eval --dry-run                # stdout only
+./scripts/dev.sh eval --limit 5                # smoke-test 5 cases
 ```
 
-The three experiments are `schema_rag`, `self_healing`, and
-`dialogue_context` — each pairs the production default against a
-"feature off" baseline so the per-feature contribution is visible.
+The eight A/Bs:
+
+| # | Experiment | What it isolates | ADR |
+|---|---|---|---|
+| 1 | `schema_rag` | RAG vs full-DDL dump | [0003](docs/decisions/0003-embedding-provider.md) |
+| 2 | `self_healing` | Per-class retry budget vs zero retries | [0004](docs/decisions/0004-self-healing-policy.md) |
+| 3 | `dialogue_context` | Follow-up turns can / can't see history | [0005](docs/decisions/0005-conversation-persistence.md) |
+| 4 | `analyst` | Multi-agent supervisor + drill-down vs single-graph | [0014](docs/decisions/0014-multi-agent-supervisor-analyst.md) |
+| 5 | `coverage_check` | Phase 1.1 coverage gate vs always-attempt-SQL | [0016](docs/decisions/0016-schema-profiling-and-coverage.md) |
+| 6 | `patterns_detection` | Phase 1.2 outlier/trend bullets vs no findings | [0017](docs/decisions/0017-pattern-detection.md) |
+| 7 | `investigate_mode` | Phase 1.3 6-hop budget vs cap-at-2 | [0018](docs/decisions/0018-investigate-mode.md) |
+| 8 | `critic` | Phase 2.3 SQL verification loop vs skip | [0021](docs/decisions/0021-sql-verification-loop.md) |
+
+**Latest critic A/B** (`docs/eval/20260601-143155-critic.md`):
+critic-on lifted success_rate from 82.0% → 84.0% (**+2.0 pp**)
+on the existing 50-case set, at +545 ms latency and +12 tokens
+per turn. The lift is modest because the case set predates the
+critic and contains no `semantic_trap` category — the failure mode
+the critic is specifically designed to catch is undersampled
+here. Expanding the eval set with 5-10 dedicated semantic-trap
+cases is the obvious follow-up (Phase 2.3.2).
+
 See [ADR 0007](docs/decisions/0007-eval-methodology.md) for the
 methodology and trade-offs (e.g. why deterministic graders, why not
 RAGAS).
