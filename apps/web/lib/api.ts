@@ -195,6 +195,182 @@ export async function loadConversation(threadId: string): Promise<ReplayMessage[
 }
 
 // ---------------------------------------------------------------------------
+// Dashboards (Phase 2.1.1 / ADR 0020)
+// ---------------------------------------------------------------------------
+
+/** Header row from ``GET /dashboards``. ``item_count`` is joined in
+ * by the API so the list page renders rich tiles in a single round
+ * trip. */
+export interface Dashboard {
+  id: string;
+  title: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  item_count: number;
+}
+
+/** A snapshot card sitting at a fixed grid position. ADR 0020 §2:
+ * the FE renders ONLY from the snapshot columns — SQL is never
+ * re-executed at render time. */
+export interface DashboardItem {
+  id: string;
+  dashboard_id: string;
+  source_thread_id: string | null;
+  source_turn_index: number | null;
+  title: string;
+  sql: string | null;
+  answer: string | null;
+  chart_kind: string | null;
+  chart_spec: Record<string, unknown> | null;
+  rows: Array<Record<string, unknown>> | null;
+  row_count: number | null;
+  insight: {
+    headline?: string;
+    bullets?: string[];
+    metric_highlights?: Array<{ label: string; value: number; format?: string }>;
+  } | null;
+  position_x: number;
+  position_y: number;
+  width: number;
+  height: number;
+  created_at: string;
+}
+
+/** Detail-page payload — dashboard header + every card on it, in
+ * insert order. */
+export interface DashboardDetail extends Dashboard {
+  items: DashboardItem[];
+}
+
+/** Body shape for ``POST /dashboards/{id}/items``. Mirrors backend
+ * ``DashboardItemRequest`` in ``main.py`` — see ADR 0020 §3 for why
+ * the FE owns the snapshot (chart_spec / insight / rows only ever
+ * exist on the live ``AskResponse``, never in persisted dialogue). */
+export interface DashboardItemSnapshot {
+  title: string;
+  sql: string | null;
+  answer: string | null;
+  chart_kind: string | null;
+  chart_spec: Record<string, unknown> | null;
+  rows: Array<Record<string, unknown>> | null;
+  row_count: number | null;
+  insight: DashboardItem["insight"];
+  source_thread_id: string | null;
+  source_turn_index: number | null;
+  position_x?: number;
+  position_y?: number;
+  width?: number;
+  height?: number;
+}
+
+/** Patch shape — backend (ADR 0020 §4) only accepts these four +
+ * title; any snapshot field on the wire is silently dropped. */
+export interface DashboardItemPatch {
+  title?: string;
+  position_x?: number;
+  position_y?: number;
+  width?: number;
+  height?: number;
+}
+
+export async function listDashboards(): Promise<Dashboard[]> {
+  const r = await fetch("/api/dashboards", { cache: "no-store" });
+  if (!r.ok) throw new Error(`list dashboards failed: HTTP ${r.status}`);
+  const body = (await r.json()) as { items: Dashboard[] };
+  return body.items;
+}
+
+export async function createDashboard(body: {
+  title: string;
+  description?: string;
+}): Promise<Dashboard> {
+  const r = await fetch("/api/dashboards", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`create dashboard failed: HTTP ${r.status}`);
+  return (await r.json()) as Dashboard;
+}
+
+export async function getDashboard(id: string): Promise<DashboardDetail> {
+  const r = await fetch(`/api/dashboards/${encodeURIComponent(id)}`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`get dashboard failed: HTTP ${r.status}`);
+  return (await r.json()) as DashboardDetail;
+}
+
+export async function updateDashboard(
+  id: string,
+  body: { title?: string; description?: string },
+): Promise<Dashboard> {
+  const r = await fetch(`/api/dashboards/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`update dashboard failed: HTTP ${r.status}`);
+  return (await r.json()) as Dashboard;
+}
+
+export async function deleteDashboard(id: string): Promise<void> {
+  const r = await fetch(`/api/dashboards/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok && r.status !== 404) {
+    throw new Error(`delete dashboard failed: HTTP ${r.status}`);
+  }
+}
+
+export async function addDashboardItem(
+  dashboardId: string,
+  snapshot: DashboardItemSnapshot,
+): Promise<DashboardItem> {
+  const r = await fetch(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/items`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(snapshot),
+    },
+  );
+  if (!r.ok) throw new Error(`add item failed: HTTP ${r.status}`);
+  return (await r.json()) as DashboardItem;
+}
+
+export async function updateDashboardItem(
+  dashboardId: string,
+  itemId: string,
+  patch: DashboardItemPatch,
+): Promise<DashboardItem> {
+  const r = await fetch(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/items/${encodeURIComponent(itemId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!r.ok) throw new Error(`update item failed: HTTP ${r.status}`);
+  return (await r.json()) as DashboardItem;
+}
+
+export async function deleteDashboardItem(
+  dashboardId: string,
+  itemId: string,
+): Promise<void> {
+  const r = await fetch(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/items/${encodeURIComponent(itemId)}`,
+    { method: "DELETE" },
+  );
+  if (!r.ok && r.status !== 404) {
+    throw new Error(`delete item failed: HTTP ${r.status}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // SSE parsing — exported for tests
 // ---------------------------------------------------------------------------
 

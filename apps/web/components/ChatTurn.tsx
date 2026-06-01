@@ -1,6 +1,8 @@
 "use client";
 
-import type { ChatTurnViewModel } from "@/lib/types";
+import type { DashboardItemSnapshot } from "@/lib/api";
+import type { AskResponse, ChatTurnViewModel } from "@/lib/types";
+import { AddToDashboardButton } from "./AddToDashboardButton";
 import { AgentTrace } from "./AgentTrace";
 import { ChartRenderer } from "./ChartRenderer";
 import { CostPanel } from "./CostPanel";
@@ -88,20 +90,29 @@ export function ChatTurn({
                 spec={result.chart_spec}
                 rows={result.rows}
               />
-              {result.sql && (
-                <details className="text-xs text-(--color-muted)">
-                  <summary className="cursor-pointer select-none">
-                    SQL · {result.attempts} attempt
-                    {result.attempts === 1 ? "" : "s"}
-                    {result.row_count !== null
-                      ? ` · ${result.row_count} rows`
-                      : ""}
-                  </summary>
-                  <pre className="mt-2 overflow-x-auto rounded-sm bg-(--color-bg) p-2">
-                    <code>{result.sql}</code>
-                  </pre>
-                </details>
-              )}
+              <div className="flex items-start justify-between gap-3">
+                {result.sql ? (
+                  <details className="min-w-0 flex-1 text-xs text-(--color-muted)">
+                    <summary className="cursor-pointer select-none">
+                      SQL · {result.attempts} attempt
+                      {result.attempts === 1 ? "" : "s"}
+                      {result.row_count !== null
+                        ? ` · ${result.row_count} rows`
+                        : ""}
+                    </summary>
+                    <pre className="mt-2 overflow-x-auto rounded-sm bg-(--color-bg) p-2">
+                      <code>{result.sql}</code>
+                    </pre>
+                  </details>
+                ) : (
+                  <span />
+                )}
+                {isExtractable(result, turn.question) && (
+                  <AddToDashboardButton
+                    snapshot={buildSnapshot(result, turn.question)}
+                  />
+                )}
+              </div>
             </>
           )}
           <CostPanel cost={result.cost} />
@@ -109,4 +120,53 @@ export function ChatTurn({
       )}
     </article>
   );
+}
+
+/**
+ * A turn is "extractable" when the assistant turn produced a chart
+ * or insight payload — i.e. it ran SQL and rendered output. Replayed
+ * turns from the saved-conversation drawer set ``chart_kind=null``
+ * deliberately (see ``ChatPanel.loadSavedConversation``); we hide
+ * the button on those so users don't extract a partial snapshot
+ * that's missing the chart spec / rows. ADR 0020 §"Risks".
+ */
+function isExtractable(
+  result: AskResponse,
+  question: string | null,
+): boolean {
+  if (!question) return false;
+  if (result.error) return false;
+  return result.chart_kind !== null;
+}
+
+/**
+ * Project the live ``AskResponse`` into the snapshot shape the
+ * backend stores. Title defaults to the user's question capped at
+ * 80 chars (matches ``snapshot_from_replay_turn`` in ``dashboards.py``
+ * so a re-extract via the future "refresh" path would derive the
+ * same title).
+ */
+function buildSnapshot(
+  result: AskResponse,
+  question: string | null,
+): DashboardItemSnapshot {
+  const raw = (question ?? "").trim().replace(/\s+/g, " ");
+  const title =
+    raw.length === 0
+      ? "Untitled card"
+      : raw.length <= 80
+        ? raw
+        : raw.slice(0, 79).trimEnd() + "…";
+  return {
+    title,
+    sql: result.sql,
+    answer: result.answer || null,
+    chart_kind: result.chart_kind,
+    chart_spec: result.chart_spec,
+    rows: result.rows,
+    row_count: result.row_count,
+    insight: result.insight as DashboardItemSnapshot["insight"],
+    source_thread_id: result.conversation_id,
+    source_turn_index: result.turn_index,
+  };
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   listSavedConversations,
@@ -259,6 +260,12 @@ export function ChatPanel() {
         <header className="flex items-center justify-between border-b border-(--color-border) bg-white px-4 py-3">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold">Data Copilot</h1>
+            <Link
+              href="/dashboards"
+              className="rounded-md border border-(--color-border) bg-white px-2.5 py-1 text-xs text-(--color-muted) hover:bg-(--color-bg)"
+            >
+              Dashboards →
+            </Link>
             {conversationId && (
               <span className="font-mono text-xs text-(--color-muted)">
                 thread: {conversationId.slice(0, 8)}…

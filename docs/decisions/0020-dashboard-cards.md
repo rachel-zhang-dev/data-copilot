@@ -1,6 +1,6 @@
-# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1, backend only)
+# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1 + 2.1.1)
 
-> Status: Accepted (backend) / Pending (FE) · Date: 2026-06 (Phase 2.1) · Supersedes: none
+> Status: Accepted · Date: 2026-06 (Phase 2.1 backend → Phase 2.1.1 FE) · Supersedes: none
 
 ## Context
 
@@ -17,10 +17,14 @@ without screenshots. After Phase 2.1 they pick the three turns,
 add them to a "Q3 Sales Brief" dashboard, drag-arrange, and that
 dashboard URL becomes the artifact.
 
-This commit ships **backend only** (DDL + service + 7 endpoints +
-ADR). The FE grid + drag-drop renderer comes in Phase 2.1.1 — split
-because the UI work needs its own design pass (react-grid-layout
-choice, drag UX, refresh semantics).
+This decision shipped in two commits:
+
+* **Phase 2.1** (backend) — DDL + service + 7 endpoints + ADR.
+* **Phase 2.1.1** (FE) — Route Handler proxies, an "📌 Add to dashboard"
+  disclosure on every chat turn, a `/dashboards` index page, and a
+  `/dashboards/[id]` detail page that hosts a `react-grid-layout`
+  12-column grid (drag, resize, inline rename, delete). FE notes are
+  recorded in §"Phase 2.1.1 — Frontend additions" below.
 
 ## Decision
 
@@ -177,12 +181,114 @@ We considered always re-running the SQL with a "card last refreshed
 the eval data shows >70% of turn answers don't change day-over-day
 on the Northwind demo — re-running is mostly wasted work.
 
+## Phase 2.1.1 — Frontend additions
+
+### Grid library: `react-grid-layout/legacy`
+
+`react-grid-layout` 2.x is a TypeScript-first rewrite that groups
+the old flat props (`cols`, `rowHeight`, `compactType`, …) into
+nested config objects (`gridConfig`, `dragConfig`, `compactor`).
+The new surface is more powerful but the FE doesn't need any of
+the extra knobs (custom compactors, position strategies); on the
+other hand the v1 API is small enough to read in one sitting.
+
+We import from the bundled `react-grid-layout/legacy` entry, which
+ships specifically as a "100% runtime-compatible" migration path
+for v1 users. Trade-off accepted:
+
+* (+) Component stays under 200 lines; the prop set
+  (`cols=12`, `rowHeight=60`, `draggableHandle=".drag-handle"`,
+  `compactType="vertical"`) reads exactly the same as every v1
+  RGL tutorial on the web.
+* (-) We're on a soft-deprecation path. The upstream README
+  positions `/legacy` as a migration step, not the long-term
+  home. If we ever need the v2-only features (custom compactor,
+  framework-agnostic `core` builds), we'll port.
+
+### Width detection: ResizeObserver, not `WidthProvider`
+
+The v1 `WidthProvider` HOC measures via window listeners and a
+remount-on-resize pattern that fights React 19's strict mode. We
+own a `ResizeObserver` on the grid container instead (one effect
+in `DashboardGrid.tsx`). Cleaner, ~10 lines, no hidden side
+effects.
+
+### Layout persistence: `onDragStop` + `onResizeStop`, NOT `onLayoutChange`
+
+`onLayoutChange` fires on every mount (and on every frame during
+a drag). Naïve persistence would either fire spurious PATCHes on
+first render or hammer the backend at ~60 Hz. The `Stop`
+callbacks fire exactly once when the user releases the mouse —
+that's the "save point" the FE and backend agree on.
+
+The grid hands us the full layout each time, so the FE diffs
+position / size against the in-memory items and PATCHes only
+what changed. With dozens of cards per dashboard the linear
+scan is cheap; we don't memoise.
+
+### Snapshot composition lives in the FE
+
+`ChatTurn.tsx` builds the `DashboardItemSnapshot` from the live
+`AskResponse` (title from the user's question, capped at 80 chars
+to match the backend's `snapshot_from_replay_turn`). The picker
+POSTs that envelope verbatim — every field on the wire matches
+the `DashboardItemRequest` pydantic model 1:1, so the static
+contract is enforced by `openapi-typescript` regen and not just
+trust.
+
+### Replayed turns: button hidden, not disabled
+
+ADR 0020 §"Risks" flagged that re-extracting from a saved-and-
+reloaded chat yields a partial snapshot (`chart_spec` / `insight` /
+`rows` are not in persisted `dialogue`). The FE gate is in
+`ChatTurn.isExtractable`: we hide the button entirely when
+`result.chart_kind === null`. Reasoning:
+
+* Replayed turns set `chart_kind=null` deliberately in
+  `ChatPanel.loadSavedConversation`, so this single check
+  covers the case without any new metadata.
+* A disabled button with a tooltip would invite the question
+  "why can't I save this?". Hiding it sidesteps that — the user
+  re-asks the question to get a fresh, fully-rendered turn, and
+  the button reappears.
+
+### Rename UX: double-click → input, matching `SavedDrawer`
+
+Card title, dashboard title (both list tile and detail header),
+and saved-conversation title all use the same `double-click →
+input → Enter saves / Escape cancels` pattern. The fourth
+appearance of this pattern is a soft signal that we should
+extract it into a `<InlineRenameField />` primitive in a Phase
+2.2 cleanup; tracked as future work, deferred because the
+current three call sites still fit on one screen each.
+
+### Why no react-grid-layout responsiveness?
+
+The v1 `Responsive` + `WidthProvider` combination supports
+breakpoint-specific layouts. We deliberately use plain
+`GridLayout` because:
+
+* A 12-column desktop layout collapsing to 1-column on mobile is
+  easy to express with `cols=12` + content that naturally
+  overflows. We don't need separate breakpoint layouts.
+* Storing per-breakpoint positions would multiply the
+  `dashboard_items` row size (4 numbers × N breakpoints) for a
+  feature most users won't notice.
+
+If demand surfaces we can switch to `ResponsiveGridLayout` and
+add `position_lg / position_md / position_sm` columns without a
+breaking schema change.
+
+### Imports + bundle
+
+`react-grid-layout/css/styles.css` is imported once in
+`app/dashboards/[id]/page.tsx` (the only route that mounts a
+grid) so the ~5 KB stylesheet doesn't ship to the chat page.
+Bundle delta on `/dashboards/[id]`: ~21 KB first-load JS
+(verified via `next build` summary).
+
 ## Risks and known limitations
 
-* **No FE in this commit.** The endpoint surface is complete; users
-  can `curl` the API but the chat UI has no "Add to dashboard"
-  button yet. The FE work (grid layout, drag-drop, dashboard list
-  page, card render component) is tracked as Phase 2.1.1.
 * **Snapshot bloat.** A card with 100 rows × wide columns can take
   ~50-200 KB of JSONB. For typical Northwind queries this is fine,
   but a 50-card dashboard could approach single-row Postgres TOAST

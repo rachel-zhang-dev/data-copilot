@@ -58,7 +58,7 @@ Then you pin the good ones to a sidebar drawer, and grid them into dashboards.
 | 📊 **Statistical pattern detection** | Outliers (Tukey IQR + z-score) and trends (OLS + R²) computed deterministically in numpy on every successful data turn; LLM only translates structured findings into natural language so the facts can't be hallucinated ([ADR 0017](docs/decisions/0017-pattern-detection.md)) |
 | 🔬 **Investigate mode** | Open-ended research questions ("why is X declining", "deep dive into Y") get a fourth classifier intent and a 6-hop drill-down budget so the analyst can chain multiple sub-queries before answering — plain data questions stay on the cheap 2-hop ceiling ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 📌 **Saved conversations** | One-click pin on any chat → it lands in a left-rail drawer; click to replay full history and keep talking. Zero-friction (no dialog), with inline title editing in the sidebar ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
-| 📐 **Dashboard cards** *(backend)* | Extract any assistant turn into a snapshot card and grid it onto a named dashboard. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card. FE coming in Phase 2.1.1 ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
+| 📐 **Dashboard cards** | Click "📌 Add to dashboard" on any answer → snapshot card lands on a 12-column react-grid-layout. Drag, resize, rename inline. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
 | 🔍 **Comparative eval harness** | 50 hand-written cases across 11 categories × **7 A/B experiments** (RAG on/off, self-heal, dialogue context, analyst, coverage_check, patterns_detection, investigate_mode); markdown reports archived per run under [`docs/eval/`](docs/eval/) |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
 | 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel, saved-conversations drawer |
@@ -477,8 +477,8 @@ Sentry, and the Redis-migration design.
 | 1.2 ✅ | Phase 1 / step 2 — statistical pattern detection (outliers + trends) merged into insight bullets ([ADR 0017](docs/decisions/0017-pattern-detection.md)) |
 | 1.3 ✅ | Phase 1 / step 3 — investigate intent + intent-aware drill-down budget (2 hops for data, 6 for investigate) ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 1.4 ✅ | Phase 1 / step 4 — saved conversations + left-rail drawer + click-to-replay ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
-| 2.1 🟡 | Phase 2 / step 1 — dashboard cards backend (DDL + 7 endpoints + ADR); FE grid renderer pending ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
-| 2.1.1 ⏳ | Phase 2 / step 1, FE half — "Add to dashboard" button on chat turns, dashboard list page, react-grid-layout renderer for cards, drag-resize, inline rename. Backend endpoints already shipped in 2.1; this is purely a Next.js + Tailwind frontend commit. Est. 2-3 days. |
+| 2.1 ✅ | Phase 2 / step 1 — dashboard cards backend (DDL + 7 endpoints + ADR) ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
+| 2.1.1 ✅ | Phase 2 / step 1, FE half — "📌 Add to dashboard" button on chat turns, `/dashboards` index page, `/dashboards/[id]` with `react-grid-layout` (drag, resize, inline rename, delete). 4 new Route Handler proxies + 5 new components + 12 new vitest cases ([ADR 0020 §Phase 2.1.1](docs/decisions/0020-dashboard-cards.md)) |
 
 ## Project layout
 

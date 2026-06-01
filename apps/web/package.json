@@ -17,11 +17,13 @@
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-grid-layout": "^2.2.3",
     "vega": "^5.30.0",
-    "vega-lite": "^5.21.0",
-    "vega-embed": "^6.26.0"
+    "vega-embed": "^6.26.0",
+    "vega-lite": "^5.21.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
     "@testing-library/jest-dom": "^6.5.0",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
@@ -35,7 +37,6 @@
     "openapi-typescript": "^7.5.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^4.0.0",
-    "@tailwindcss/postcss": "^4.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   },
