@@ -453,6 +453,11 @@ class DashboardItemRequest(BaseModel):
     rows: list[dict[str, Any]] | None = None
     row_count: int | None = None
     insight: dict[str, Any] | None = None
+    # Phase 2.3.1 — critic verdict (ADR 0021) preserved on the card
+    # so a "suspicious" / "wrong" turn pinned to a dashboard keeps
+    # its low-confidence badge. None for cards extracted from ``ok``
+    # turns or from chats where the critic flag was disabled.
+    critic: dict[str, Any] | None = None
     source_thread_id: str | None = None
     source_turn_index: int | None = None
     position_x: int = 0

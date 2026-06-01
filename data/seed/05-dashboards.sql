@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS dashboard_items (
     rows               JSONB,                         -- list[dict]
     row_count          INTEGER,
     insight            JSONB,                         -- {headline, bullets, metric_highlights}
+    -- Phase 2.3.1 — preserve the critic verdict (ADR 0021) into the
+    -- snapshot so a "suspicious" turn pinned to a dashboard keeps
+    -- showing its ⚠ low-confidence badge instead of losing the
+    -- warning. Shape: {verdict, reason, concerns}. NULL on cards
+    -- extracted before the critic shipped or on turns where the
+    -- critic was disabled by the feature flag.
+    critic             JSONB,
 
     -- Grid layout. Coords are 12-column-grid units (react-grid-layout
     -- conventions). Defaults give a small KPI-shaped card the user
@@ -69,6 +76,15 @@ CREATE TABLE IF NOT EXISTS dashboard_items (
 
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Phase 2.3.1 — additive column for existing dev / prod databases
+-- that already created ``dashboard_items`` before Phase 2.3.1. The
+-- CREATE TABLE above is idempotent (``IF NOT EXISTS``) and so it
+-- does NOT add the column to a pre-existing table; this ALTER
+-- closes that gap. ``IF NOT EXISTS`` on both halves keeps the
+-- whole seed file safely re-runnable.
+ALTER TABLE IF EXISTS dashboard_items
+    ADD COLUMN IF NOT EXISTS critic JSONB;
 
 CREATE INDEX IF NOT EXISTS dashboard_items_dashboard
     ON dashboard_items (dashboard_id, created_at);

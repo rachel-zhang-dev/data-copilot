@@ -30,6 +30,7 @@ function _item(overrides: Partial<DashboardItem> = {}): DashboardItem {
         { label: "Germany customers", value: 11, format: "integer" },
       ],
     },
+    critic: null,
     position_x: 0,
     position_y: 0,
     width: 4,
@@ -142,5 +143,37 @@ describe("DashboardCard", () => {
     expect(
       screen.queryByTestId("view-source-chat-link"),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders the critic badge when the snapshot carries a suspicious verdict", () => {
+    render(
+      <DashboardCard
+        item={_item({
+          critic: {
+            verdict: "suspicious",
+            reason: "JOIN may fan out duplicates",
+            concerns: ["consider DISTINCT"],
+          },
+        })}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const badge = screen.getByTestId("critic-badge");
+    expect(badge).toHaveAttribute("data-verdict", "suspicious");
+    expect(screen.getByText("consider DISTINCT")).toBeInTheDocument();
+  });
+
+  it("renders nothing critic-related when verdict is ok or null (no badge clutter on clean cards)", () => {
+    render(
+      <DashboardCard
+        item={_item({
+          critic: { verdict: "ok", reason: "matches", concerns: [] },
+        })}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("critic-badge")).not.toBeInTheDocument();
   });
 });

@@ -137,11 +137,14 @@ The hypothesis under test:
   concerns on `suspicious` / `wrong`. Embedded in `ChatTurn`
   above the `InsightPanel` so users see the warning before the
   numbers it warns about.
-* No FE surface on dashboard cards yet — the snapshot model in
-  ADR 0020 doesn't carry `critic`. Adding it is a one-column
-  schema migration + UI conditional; deferred to keep this ADR
-  focused. Until then a card extracted from a suspicious turn
-  loses its badge; the chat-side answer still shows it.
+* **Done in Phase 2.3.1.** Dashboard cards now carry the critic
+  verdict. The snapshot model gained a `critic JSONB` column
+  (`data/seed/05-dashboards.sql` + idempotent `ALTER TABLE`),
+  `DashboardItemSnapshot` forwards `result.critic` from the live
+  `AskResponse`, and `DashboardCard` renders the same
+  `CriticBadge` above its insight panel. A turn flagged
+  `suspicious` keeps showing the ⚠ badge on the dashboard tile
+  it ends up on; an `ok` turn shows nothing extra.
 
 ## Alternatives explicitly rejected
 

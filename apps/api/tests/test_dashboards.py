@@ -16,7 +16,11 @@ from copilot.dashboards import _row_to_item, snapshot_from_replay_turn
 
 
 def _row(**overrides: object) -> tuple[object, ...]:
-    """Build a row tuple shaped like the ``_ITEM_COLS`` SELECT."""
+    """Build a row tuple shaped like the ``_ITEM_COLS`` SELECT.
+
+    Phase 2.3.1 added ``critic`` between ``insight`` and ``position_x``;
+    callers that don't override it default to ``None`` (mirrors how
+    the DB defaults the new JSONB column on insert)."""
     defaults: dict[str, object] = {
         "id": "i1",
         "dashboard_id": "d1",
@@ -30,6 +34,7 @@ def _row(**overrides: object) -> tuple[object, ...]:
         "rows": None,
         "row_count": None,
         "insight": None,
+        "critic": None,
         "position_x": 0,
         "position_y": 0,
         "width": 4,
@@ -166,6 +171,30 @@ def test_snapshot_propagates_chart_and_insight_when_present() -> None:
     assert snap["rows"] == [{"country": "USA"}]
     assert snap["row_count"] == 1
     assert snap["insight"]["headline"] == "h"
+
+
+def test_row_to_item_round_trips_critic_verdict() -> None:
+    """Phase 2.3.1 — the critic JSONB column must come through
+    ``_row_to_item`` as a dict so the FE can render its CriticBadge."""
+    row = _row(
+        critic={
+            "verdict": "suspicious",
+            "reason": "JOIN may fan out duplicates",
+            "concerns": ["consider DISTINCT"],
+        }
+    )
+    out = _row_to_item(row)
+    assert isinstance(out["critic"], dict)
+    assert out["critic"]["verdict"] == "suspicious"
+    assert out["critic"]["concerns"] == ["consider DISTINCT"]
+
+
+def test_row_to_item_critic_null_for_pre_phase_2_3_rows() -> None:
+    """Cards extracted before Phase 2.3.1 have NULL in the new
+    column; the projection must not crash."""
+    row = _row(critic=None)
+    out = _row_to_item(row)
+    assert out["critic"] is None
 
 
 def test_snapshot_accepts_answer_field_as_alias_for_content() -> None:

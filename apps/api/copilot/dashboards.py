@@ -74,6 +74,10 @@ class DashboardItem:
     rows: list[dict[str, Any]] | None
     row_count: int | None
     insight: dict[str, Any] | None
+    # Phase 2.3.1 — frozen critic verdict (ADR 0021). NULL for
+    # ``ok`` verdicts (the FE shows nothing anyway), populated for
+    # ``suspicious`` / ``wrong`` so the badge survives extraction.
+    critic: dict[str, Any] | None
     position_x: int
     position_y: int
     width: int
@@ -123,18 +127,21 @@ def _row_to_item(row: Any) -> dict[str, Any]:
         "rows": _json(row[9]),
         "row_count": row[10],
         "insight": _json(row[11]),
-        "position_x": int(row[12]),
-        "position_y": int(row[13]),
-        "width": int(row[14]),
-        "height": int(row[15]),
-        "created_at": row[16].isoformat() if row[16] else None,
+        # Phase 2.3.1 — critic verdict; new tail column so the index
+        # shift is local to this row and to ``_ITEM_COLS`` below.
+        "critic": _json(row[12]),
+        "position_x": int(row[13]),
+        "position_y": int(row[14]),
+        "width": int(row[15]),
+        "height": int(row[16]),
+        "created_at": row[17].isoformat() if row[17] else None,
     }
 
 
 _ITEM_COLS = (
     "id, dashboard_id, source_thread_id, source_turn_index, "
     "title, sql, answer, chart_kind, chart_spec, rows, row_count, "
-    "insight, position_x, position_y, width, height, created_at"
+    "insight, critic, position_x, position_y, width, height, created_at"
 )
 
 
@@ -332,7 +339,7 @@ def add_item(
                     id, dashboard_id,
                     source_thread_id, source_turn_index,
                     title, sql, answer, chart_kind,
-                    chart_spec, rows, row_count, insight,
+                    chart_spec, rows, row_count, insight, critic,
                     position_x, position_y, width, height
                 )
                 VALUES (
@@ -343,6 +350,7 @@ def add_item(
                     CAST(:rows AS jsonb),
                     :row_count,
                     CAST(:insight AS jsonb),
+                    CAST(:critic AS jsonb),
                     :position_x, :position_y, :width, :height
                 )
                 RETURNING {_ITEM_COLS}
@@ -366,6 +374,14 @@ def add_item(
                 "row_count": snapshot.get("row_count"),
                 "insight": json.dumps(snapshot["insight"])
                 if snapshot.get("insight") is not None
+                else None,
+                # Phase 2.3.1 — store the critic verdict alongside
+                # the snapshot. ``ok`` verdicts are stored too (NULL
+                # only when the caller didn't supply one) so a future
+                # consumer can distinguish "critic ran and said ok"
+                # from "critic didn't run on this turn".
+                "critic": json.dumps(snapshot["critic"])
+                if snapshot.get("critic") is not None
                 else None,
                 "position_x": int(snapshot.get("position_x", 0)),
                 "position_y": int(snapshot.get("position_y", 0)),

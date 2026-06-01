@@ -20,6 +20,7 @@ const SNAPSHOT: DashboardItemSnapshot = {
   rows: [{ count: 11 }],
   row_count: 1,
   insight: { headline: "11 customers", bullets: [], metric_highlights: [] },
+  critic: null,
   source_thread_id: "thr-1",
   source_turn_index: 1,
 };

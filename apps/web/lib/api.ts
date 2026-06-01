@@ -212,7 +212,8 @@ export interface Dashboard {
 
 /** A snapshot card sitting at a fixed grid position. ADR 0020 §2:
  * the FE renders ONLY from the snapshot columns — SQL is never
- * re-executed at render time. */
+ * re-executed at render time. Phase 2.3.1 added ``critic`` so the
+ * low-confidence badge survives extraction (ADR 0021). */
 export interface DashboardItem {
   id: string;
   dashboard_id: string;
@@ -229,6 +230,11 @@ export interface DashboardItem {
     headline?: string;
     bullets?: string[];
     metric_highlights?: Array<{ label: string; value: number; format?: string }>;
+  } | null;
+  critic: {
+    verdict: "ok" | "suspicious" | "wrong";
+    reason: string;
+    concerns: string[];
   } | null;
   position_x: number;
   position_y: number;
@@ -256,6 +262,9 @@ export interface DashboardItemSnapshot {
   rows: Array<Record<string, unknown>> | null;
   row_count: number | null;
   insight: DashboardItem["insight"];
+  // Phase 2.3.1 — forward the critic verdict so a flagged turn
+  // stays flagged after extraction (ADR 0021 §"Frontend surface").
+  critic: DashboardItem["critic"];
   source_thread_id: string | null;
   source_turn_index: number | null;
   position_x?: number;

@@ -482,6 +482,7 @@ Sentry, and the Redis-migration design.
 | 2.1.1 ✅ | Phase 2 / step 1, FE half — "📌 Add to dashboard" button on chat turns, `/dashboards` index page, `/dashboards/[id]` with `react-grid-layout` (drag, resize, inline rename, delete). 4 new Route Handler proxies + 5 new components + 12 new vitest cases ([ADR 0020 §Phase 2.1.1](docs/decisions/0020-dashboard-cards.md)) |
 | 2.2 ✅ | Phase 2 / step 2 — "View source chat →" back-link on every card. Deep-links into `/?conversation=<id>&turn=<n>`; chat panel reads searchParams server-side, auto-loads the conversation, scrolls the matching turn into view. Closes the analyst loop: card → source chat → follow-up question ([ADR 0020 §Phase 2.2](docs/decisions/0020-dashboard-cards.md)) |
 | 2.3 ✅ | Phase 2 / step 3 — SQL verification loop. A critic LLM reviews every executed SQL + its rows; verdict `wrong` triggers one self-healing retry with the reviewer's concerns in the prompt, `suspicious` shows a ⚠ low-confidence badge alongside the answer. 8th A/B experiment + `CriticBadge` component + 23 backend + 5 frontend tests ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
+| 2.3.1 ✅ | Phase 2 / step 3, dashboards half — `dashboard_items` gets a `critic JSONB` column; `DashboardCard` reuses the chat-side `CriticBadge` so a ⚠ suspicious turn keeps its warning after being pinned. Idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in the seed for safe dev re-runs ([ADR 0020 §Phase 2.3.1 + ADR 0021 §Frontend surface](docs/decisions/0020-dashboard-cards.md)) |
 
 ## Project layout
 

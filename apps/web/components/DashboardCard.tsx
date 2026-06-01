@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { DashboardItem } from "@/lib/api";
-import type { ChartKind, Insight } from "@/lib/types";
+import type { ChartKind, Critic, Insight } from "@/lib/types";
 import { ChartRenderer } from "./ChartRenderer";
+import { CriticBadge } from "./CriticBadge";
 import { InsightPanel } from "./InsightPanel";
 
 /**
@@ -102,6 +103,12 @@ export function DashboardCard({
         </button>
       </header>
       <div className="flex flex-1 flex-col gap-2 overflow-auto p-3">
+        {/* Phase 2.3.1 — frozen critic verdict from the source turn.
+            Renders nothing on ``ok`` / null, a warn badge on
+            ``suspicious``, and an error badge on ``wrong``. Sits at
+            the top of the card body so the warning is the first thing
+            a reader sees, ahead of the numbers it warns about. */}
+        <CriticBadge critic={item.critic as Critic | null} />
         {hasInsight && <InsightPanel insight={insight} />}
         {chartKind && (
           <ChartRenderer

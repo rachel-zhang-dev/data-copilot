@@ -1,6 +1,6 @@
-# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1 + 2.1.1 + 2.2)
+# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1 + 2.1.1 + 2.2 + 2.3.1)
 
-> Status: Accepted · Date: 2026-06 (Phase 2.1 backend → 2.1.1 FE → 2.2 back-link) · Supersedes: none
+> Status: Accepted · Date: 2026-06 (Phase 2.1 backend → 2.1.1 FE → 2.2 back-link → 2.3.1 critic) · Supersedes: none
 
 ## Context
 
@@ -32,6 +32,17 @@ This decision shipped in three commits:
   view. Closes the analyst's loop: "this card looks off → jump back
   to the original chat and ask a follow-up". Notes in
   §"Phase 2.2 — Back-link to source chat" below.
+* **Phase 2.3.1** (critic preservation) — the snapshot gains a
+  `critic JSONB` column so the SQL verification verdict (ADR 0021)
+  survives extraction. A turn flagged ⚠ "suspicious" on the chat
+  side keeps that badge after being pinned to a dashboard, instead
+  of silently downgrading to a confident-looking card. Wire is
+  trivial: one extra column on `dashboard_items`, one extra field on
+  `DashboardItemRequest`, and `DashboardCard` reuses the same
+  `CriticBadge` component the chat surface uses. The idempotent
+  `ALTER TABLE IF EXISTS … ADD COLUMN IF NOT EXISTS critic JSONB`
+  in the seed file makes the migration safe to re-run on existing
+  dev databases.
 
 ## Decision
 

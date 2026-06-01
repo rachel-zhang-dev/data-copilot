@@ -171,6 +171,7 @@ function buildSnapshot(
     rows: result.rows,
     row_count: result.row_count,
     insight: result.insight as DashboardItemSnapshot["insight"],
+    critic: result.critic,
     source_thread_id: result.conversation_id,
     source_turn_index: result.turn_index,
   };
