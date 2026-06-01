@@ -61,7 +61,7 @@ Then you pin the good ones to a sidebar drawer, and grid them into dashboards.
 | 📐 **Dashboard cards** | Click "📌 Add to dashboard" on any answer → snapshot card lands on a 12-column react-grid-layout. Drag, resize, rename inline. Each card carries a "View source chat →" deep-link back to the conversation that produced it. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
 | 🛡️ **Semantic SQL verification** | A critic LLM reviews every executed SQL + its rows; flags answers as `ok` / `suspicious` / `wrong`. `wrong` triggers one self-healing retry with reviewer feedback; `suspicious` surfaces a ⚠ low-confidence badge so the user knows to double-check. Measured uplift +2.0pp on the existing 50-case eval set ([report](docs/eval/20260601-143155-critic.md)); a dedicated `semantic_trap` category is the next eval expansion ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
 | 🔌 **MCP server (stdio + HTTP)** | The whole agent is exposed as a [Model Context Protocol](https://modelcontextprotocol.io/) server with 6 tools (`ask_data`, `list_tables`, `describe_table`, `run_select`, `list_dashboards`, `get_dashboard`) + one resource (`schema://overview`). Connect Claude Desktop / Cursor / Cline locally via stdio; connect Databricks Genie / hosted Claude remotely via `POST /mcp`. Same safety layer (sqlglot AST + read-only) gates the `run_select` escape hatch ([ADR 0022](docs/decisions/0022-mcp-server.md) · [setup guide](docs/mcp-setup.md)) |
-| ⚖ **Semantic layer + routing mode** | Six pre-defined business metrics (revenue, order_count, customer_count, avg_order_value, product_count, units_sold) × five dimensions (country, category, employee, month, year) declared in `data/semantic.yml`. The LLM router picks `{metric, dimensions, time_range, filters}` from the menu; a deterministic resolver compiles to SQL with the JOINs / aggregation grain pre-decided — NEVER guessed. Uncovered questions fall through to the existing text-to-SQL pipeline (Snowflake Cortex's "Routing Mode" pattern). 44 tests cover the loader, BFS join planner, and node fail-soft paths ([ADR 0023](docs/decisions/0023-semantic-layer-routing.md)) |
+| ⚖ **Semantic layer + routing mode** | Six pre-defined business metrics (revenue, order_count, customer_count, avg_order_value, product_count, units_sold) × five dimensions (country, category, employee, month, year) declared in `data/semantic.yml`. The LLM router picks `{metric, dimensions, time_range, filters}` from the menu; a deterministic resolver compiles to SQL with the JOINs / aggregation grain pre-decided — NEVER guessed. Uncovered questions fall through to the existing text-to-SQL pipeline (Snowflake Cortex's "Routing Mode" pattern). Latest A/B on Northwind: **+0.0 pp**, **−289 ms latency** ([report](docs/eval/20260601-154656-semantic_layer.md)) — flat success because the LLM text-to-SQL pipeline already hits 100% on covered categories on this simple 14-table schema; the layer's real value shows up on enterprise schemas where raw text-to-SQL gets 10-31% on production ERP data per the [dbt 2026 benchmark](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026). The architecture is in place for whenever someone points this at a harder schema. 44 backend tests cover the loader, BFS join planner, and node fail-soft paths ([ADR 0023](docs/decisions/0023-semantic-layer-routing.md)) |
 | 🔍 **Comparative eval harness** | 50 hand-written cases across 11 categories × **8 A/B experiments** (RAG on/off, self-heal, dialogue context, analyst, coverage_check, patterns_detection, investigate_mode, critic); markdown reports archived per run under [`docs/eval/`](docs/eval/) |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
 | 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel, saved-conversations drawer |
@@ -269,14 +269,18 @@ The eight A/Bs:
 | 7 | `investigate_mode` | Phase 1.3 6-hop budget vs cap-at-2 | [0018](docs/decisions/0018-investigate-mode.md) |
 | 8 | `critic` | Phase 2.3 SQL verification loop vs skip | [0021](docs/decisions/0021-sql-verification-loop.md) |
 
-**Latest critic A/B** (`docs/eval/20260601-143155-critic.md`):
-critic-on lifted success_rate from 82.0% → 84.0% (**+2.0 pp**)
-on the existing 50-case set, at +545 ms latency and +12 tokens
-per turn. The lift is modest because the case set predates the
-critic and contains no `semantic_trap` category — the failure mode
-the critic is specifically designed to catch is undersampled
-here. Expanding the eval set with 5-10 dedicated semantic-trap
-cases is the obvious follow-up (Phase 2.3.2).
+**Latest A/B reports** (50 cases each, run 2026-06-01):
+
+| Experiment | Report | Headline |
+|---|---|---|
+| **critic** (8) | [`20260601-143155-critic.md`](docs/eval/20260601-143155-critic.md) | success_rate 82.0% → 84.0% (**+2.0 pp**), +545 ms, +12 tokens. Modest because the case set predates the critic and contains no dedicated `semantic_trap` category (Phase 2.3.2 follow-up). |
+| **semantic_layer** (9) | [`20260601-154656-semantic_layer.md`](docs/eval/20260601-154656-semantic_layer.md) | success_rate 84.0% → 84.0% (**+0.0 pp**), **−289 ms**, +14 tokens. Zero regressions, slight latency win because deterministic compile is faster than LLM SQL writing. Flat success because the LLM text-to-SQL pipeline already hits 100% on the categories the semantic layer would cover on this 14-table Northwind schema. The architectural value (defense-in-depth + production-correctness) doesn't surface as a number until the eval set includes enterprise-shaped schemas. |
+
+The headline lesson the two reports together teach: **a feature can
+be the right architecture choice without showing up as a `success_rate`
+delta on the wrong test set.** That's why we keep eval + ADRs + the
+A/B harness even when individual results are flat — the value goes
+into the documentation trail, not just the metric.
 
 See [ADR 0007](docs/decisions/0007-eval-methodology.md) for the
 methodology and trade-offs (e.g. why deterministic graders, why not
