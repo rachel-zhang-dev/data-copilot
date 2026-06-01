@@ -1,10 +1,10 @@
 # Data Copilot
 
-> Production-grade Text-to-SQL agent with **self-healing**, **schema-aware retrieval**, **human-in-the-loop confirmation**, **multi-turn dialogue**, and **streaming UI**. Built with LangGraph + FastAPI + Next.js, deployed on Fly.io.
+> Text-to-SQL agent that **knows what it knows** — refuses gracefully when the schema can't answer, spots outliers + trends in every result, chains multi-step queries on "why" questions, saves the good conversations to a sidebar drawer, and lets you grid them into dashboards. Built on LangGraph + FastAPI + Next.js, deployed on Fly.io.
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-291%20passing-brightgreen.svg)](#testing)
-[![ADRs](https://img.shields.io/badge/ADRs-16-blue.svg)](docs/decisions/)
+[![Tests](https://img.shields.io/badge/tests-480%20passing-brightgreen.svg)](#testing)
+[![ADRs](https://img.shields.io/badge/ADRs-20-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
@@ -22,44 +22,48 @@
 
 ## What it does
 
-You ask a business question. The agent retrieves the right slice of schema, writes safe SQL, runs it, and streams back a chart + structured insight + the SQL it ran. If the SQL fails, it self-heals; if the SQL is expensive, it pauses for your approval.
+You ask a business question. A four-way classifier decides whether you want **data**, **chitchat**, a **schema tour**, or a deeper **investigation**. For data and investigate intents, a coverage gate first checks the schema can plausibly answer (so "why is conversion dropping?" on a sales-only DB gets an honest refusal, not hallucinated SQL). The SQL gets written, self-heals on failure, pauses for your approval if it looks expensive, executes, and streams back a chart + insight + statistical pattern findings — all the SQL it ran, all the cost it spent.
+
+Then you pin the good ones to a sidebar drawer, and grid them into dashboards.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  "Which 5 products have the highest total revenue?"             │
+│  "Why are Beverages sales declining in Q3 1997?"                │
 └─────────────────────────────────────────────────────────────────┘
         │
-        ▼  schema RAG (week 3)        + 1-hop FK expansion
-        │  retrieves:  products, order_details, orders, categories
+        ▼  classify_intent (Phase 1.3) → investigate
+        ▼  retrieve_schema (week 3)    + 1-hop FK expansion
+        ▼  coverage_check (Phase 1.1)  → ok, gate passes
+        ▼  generate_sql + self-heal    + risk gate + execute
+        ▼  summarize_result + detect_patterns (Phase 1.2)
+        ▼  ⤵ analyst decides this needs another hop
+        ▼  ↻ drill_down: "Top products driving the Q3 drop"
+        ▼  ↻ generate_sql → ... → patterns → analyst
+        ▼  ↻ (up to 6 hops on investigate; 2 on plain data)
         ▼
-        │  generate SQL (week 2-4)    + self-heal on failure
-        │  ─►  SELECT p.product_name, SUM(od.unit_price * od.quantity) ...
-        ▼
-        │  risk check (week 7)        EXPLAIN cost: 280 → ok
-        ▼
-        │  execute → summarise        structured insight (week 8)
-        ▼
-        │  visualise (week 8)         Vega-Lite bar spec
-        ▼
-   answer + chart + cost — all streamed via SSE (week 10)
+   answer + chart + outlier callouts + cost — streamed via SSE
+        │
+        ▼  ★ "Save this chat" → sidebar (Phase 1.4)
+        ▼  📌 "Add to dashboard" → grid (Phase 2.1, FE pending)
 ```
 
 ## Highlights
 
 | | |
 |---|---|
-| 🧠 **LangGraph state machine, 16 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
-| 🤝 **Multi-agent supervisor + analyst** | Rule-based supervisor orchestrates a SQL Specialist and an Analyst worker; bounded recursive drill-down loop (max 2 hops) |
+| 🧠 **LangGraph state machine, 17 nodes** | Self-healing retries, multi-turn dialogue with PostgresSaver, HITL via `interrupt()` / `Command(resume=…)` |
+| 🤝 **Multi-agent supervisor + analyst** | Rule-based supervisor orchestrates a SQL Specialist and an Analyst worker; intent-aware drill-down budget (2 hops for data, **6 for investigate**) |
 | 📚 **Schema-aware RAG** | BGE-M3 embeddings over pgvector + FK 1-hop expansion + named-table fast path + full-schema fallback |
 | 🛡️ **Honest about its limits** | A cached `schema_profiles` table powers a coverage gate that refuses "no conversion-rate data here" instead of hallucinating SQL, plus a schema-tour intent that answers "what data do you have?" with clickable starter questions ([ADR 0016](docs/decisions/0016-schema-profiling-and-coverage.md)) |
 | 📊 **Statistical pattern detection** | Outliers (Tukey IQR + z-score) and trends (OLS + R²) computed deterministically in numpy on every successful data turn; LLM only translates structured findings into natural language so the facts can't be hallucinated ([ADR 0017](docs/decisions/0017-pattern-detection.md)) |
 | 🔬 **Investigate mode** | Open-ended research questions ("why is X declining", "deep dive into Y") get a fourth classifier intent and a 6-hop drill-down budget so the analyst can chain multiple sub-queries before answering — plain data questions stay on the cheap 2-hop ceiling ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 📌 **Saved conversations** | One-click pin on any chat → it lands in a left-rail drawer; click to replay full history and keep talking. Zero-friction (no dialog), with inline title editing in the sidebar ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
-| 🔍 **Comparative eval harness** | 32 hand-written cases × 3 A/B experiments (RAG on/off, self-heal on/off, dialogue context on/off); markdown reports archived per run |
+| 📐 **Dashboard cards** *(backend)* | Extract any assistant turn into a snapshot card and grid it onto a named dashboard. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card. FE coming in Phase 2.1.1 ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
+| 🔍 **Comparative eval harness** | 50 hand-written cases across 11 categories × **7 A/B experiments** (RAG on/off, self-heal, dialogue context, analyst, coverage_check, patterns_detection, investigate_mode); markdown reports archived per run under [`docs/eval/`](docs/eval/) |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
-| 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel |
+| 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel, saved-conversations drawer |
 | 🚀 **Production-deploy ready** | Multi-stage non-root Dockerfiles, two Fly.io apps, Prometheus `/metrics`, structured JSON logs, LangSmith traces |
-| 📋 **12 ADRs** | Every major decision (and the alternatives explicitly rejected) is recorded under [`docs/decisions/`](docs/decisions/) |
+| 📋 **20 ADRs** | Every major decision (and the alternatives explicitly rejected) is recorded under [`docs/decisions/`](docs/decisions/) — including week-by-week build history (ADR 0001-0015) and Phase 1+2 capability ADRs (0016-0020) |
 
 ## Run in 60 seconds
 
@@ -473,6 +477,7 @@ Sentry, and the Redis-migration design.
 | 1.2 ✅ | Phase 1 / step 2 — statistical pattern detection (outliers + trends) merged into insight bullets ([ADR 0017](docs/decisions/0017-pattern-detection.md)) |
 | 1.3 ✅ | Phase 1 / step 3 — investigate intent + intent-aware drill-down budget (2 hops for data, 6 for investigate) ([ADR 0018](docs/decisions/0018-investigate-mode.md)) |
 | 1.4 ✅ | Phase 1 / step 4 — saved conversations + left-rail drawer + click-to-replay ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
+| 2.1 🟡 | Phase 2 / step 1 — dashboard cards backend (DDL + 7 endpoints + ADR); FE grid renderer pending ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
 
 ## Project layout
 
