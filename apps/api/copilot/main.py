@@ -47,6 +47,14 @@ from copilot.checkpointer import (
 )
 from copilot.config import get_settings
 from copilot.db import dispose_engine, get_engine, get_schema_ddl
+from copilot.saved import (
+    add_previews_async,
+    first_question_async,
+    list_saved,
+    replay_conversation_async,
+    save_conversation,
+    unsave_conversation,
+)
 
 log = logging.getLogger(__name__)
 
@@ -293,6 +301,100 @@ async def health() -> dict[str, str]:
     container is still alive. Return 200 fast, no I/O.
     """
     return {"status": "ok", "version": app.version}
+
+
+# ---------------------------------------------------------------------------
+# Saved conversations (Phase 1.4 / ADR 0019)
+# ---------------------------------------------------------------------------
+
+
+class SaveConversationRequest(BaseModel):
+    """Body for ``POST /conversations/{thread_id}/save``.
+
+    All fields optional — when ``title`` is ``None`` and the thread
+    isn't already bookmarked, the service auto-derives a title from
+    the first user message (zero-friction Pin button)."""
+
+    title: str | None = None
+    tags: list[str] | None = None
+    notes: str | None = None
+
+
+@app.post("/conversations/{thread_id}/save")
+async def save_conversation_endpoint(
+    thread_id: str, req: SaveConversationRequest
+) -> dict[str, Any]:
+    """Pin (or update) a saved-conversation bookmark.
+
+    Idempotent — calling again with new fields updates them and bumps
+    ``updated_at`` without resetting ``pinned_at`` (so the FE sort
+    order stays stable across title fixes).
+
+    Auto-title path: when the caller didn't supply a ``title`` (the
+    Pin button's zero-friction mode), we go through LangGraph's
+    ``aget_state`` to read the conversation's first user question
+    and derive a title from it. Reading raw rows out of the
+    ``checkpoints`` table would miss the ``dialogue`` field because
+    LangGraph stores reducer-driven fields in ``checkpoint_blobs``
+    as msgpack — only the ``aget_state`` API reconstructs them.
+    """
+    first_q: str | None = None
+    if req.title is None:
+        try:
+            first_q = await first_question_async(app.state.sql_graph, thread_id)
+        except Exception as exc:  # noqa: BLE001
+            # Don't fail the pin just because we can't auto-title —
+            # ``derive_title`` falls back to a placeholder.
+            log.warning(
+                "save_conversation: first_question_async failed for %s: %s",
+                thread_id,
+                exc,
+            )
+    return save_conversation(
+        thread_id,
+        title=req.title,
+        tags=req.tags,
+        notes=req.notes,
+        first_question=first_q,
+    )
+
+
+@app.delete("/conversations/{thread_id}/save")
+async def unsave_conversation_endpoint(thread_id: str) -> dict[str, bool]:
+    """Drop the bookmark. Underlying LangGraph state is left intact
+    so a quick re-pin doesn't lose history."""
+    removed = unsave_conversation(thread_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="not pinned")
+    return {"unsaved": True}
+
+
+@app.get("/conversations/saved")
+async def list_saved_conversations_endpoint() -> dict[str, Any]:
+    """Return every bookmark newest-first, with a tiny preview block
+    so the FE drawer can render rich list rows without a second
+    round-trip per entry. Preview fields come from ``aget_state`` —
+    the only supported way to read LangGraph's reducer-driven
+    ``dialogue`` field (it lives in ``checkpoint_blobs`` as msgpack
+    rather than in the JSON ``channel_values``)."""
+    rows = list_saved()
+    items = await add_previews_async(app.state.sql_graph, rows)
+    return {"items": items}
+
+
+@app.get("/conversations/{thread_id}/messages")
+async def replay_conversation_endpoint(thread_id: str) -> dict[str, Any]:
+    """Return the user-visible dialogue for ``thread_id``.
+
+    The FE calls this when the user clicks a saved-conversation row
+    to restore history. 404 when the thread has no checkpoint
+    (e.g. it was never pinned, or LangGraph state was wiped)."""
+    sql_graph = app.state.sql_graph
+    try:
+        messages = await replay_conversation_async(sql_graph, thread_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"thread_id": thread_id, "messages": messages}
 
 
 @app.get("/admin/stats", tags=["observability"])

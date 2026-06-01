@@ -102,6 +102,10 @@ export interface AskResponse {
   // Phase 1.1 — only populated on the two new branches.
   intent: Intent | null;
   coverage: Coverage | null;
+  // Phase 1.2 — structured statistical findings; the bullets are
+  // already merged into ``insight.bullets`` so this is for future
+  // chart annotations / badges.
+  patterns: Array<Record<string, unknown>> | null;
 }
 
 // ---------------------------------------------------------------------------

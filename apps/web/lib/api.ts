@@ -121,6 +121,80 @@ export async function postAsk(req: AskRequest): Promise<AskResponse> {
 }
 
 // ---------------------------------------------------------------------------
+// Saved conversations (Phase 1.4 / ADR 0019)
+// ---------------------------------------------------------------------------
+
+export interface SavedConversation {
+  thread_id: string;
+  title: string;
+  tags: string[];
+  notes: string | null;
+  pinned_at: string;
+  updated_at: string;
+  last_question: string | null;
+  last_answer: string | null;
+  turn_count: number;
+}
+
+export interface ReplayMessage {
+  role: "user" | "assistant";
+  content: string;
+  sql?: string;
+  row_count?: number;
+}
+
+/** Pin / update a saved-conversation bookmark. ``title`` left null
+ * means "auto-derive from first question" on a fresh pin, or
+ * "leave unchanged" when the row already exists. */
+export async function saveConversation(
+  threadId: string,
+  body: { title?: string; tags?: string[]; notes?: string } = {},
+): Promise<SavedConversation> {
+  const r = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/save`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    throw new Error(`save failed: HTTP ${r.status}`);
+  }
+  return (await r.json()) as SavedConversation;
+}
+
+/** Drop the bookmark — underlying LangGraph history stays intact. */
+export async function unsaveConversation(threadId: string): Promise<void> {
+  const r = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/save`, {
+    method: "DELETE",
+  });
+  if (!r.ok && r.status !== 404) {
+    throw new Error(`unsave failed: HTTP ${r.status}`);
+  }
+}
+
+/** Newest-first list of pinned conversations + a tiny preview block. */
+export async function listSavedConversations(): Promise<SavedConversation[]> {
+  const r = await fetch(`/api/conversations/saved`);
+  if (!r.ok) {
+    throw new Error(`list failed: HTTP ${r.status}`);
+  }
+  const body = (await r.json()) as { items: SavedConversation[] };
+  return body.items;
+}
+
+/** Pull the user-visible dialogue for a saved thread so the FE can
+ * re-render history when the user clicks the saved row. */
+export async function loadConversation(threadId: string): Promise<ReplayMessage[]> {
+  const r = await fetch(
+    `/api/conversations/${encodeURIComponent(threadId)}/messages`,
+  );
+  if (!r.ok) {
+    throw new Error(`load failed: HTTP ${r.status}`);
+  }
+  const body = (await r.json()) as { thread_id: string; messages: ReplayMessage[] };
+  return body.messages;
+}
+
+// ---------------------------------------------------------------------------
 // SSE parsing — exported for tests
 // ---------------------------------------------------------------------------
 
