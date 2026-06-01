@@ -46,17 +46,23 @@ from copilot.checkpointer import (
     setup_checkpointer,
 )
 from copilot.config import get_settings
-from copilot.db import dispose_engine, get_engine, get_schema_ddl
 from copilot.dashboards import (
     add_item as dashboard_add_item,
+)
+from copilot.dashboards import (
     create_dashboard,
     delete_dashboard,
-    delete_item as dashboard_delete_item,
     get_dashboard,
     list_dashboards,
     update_dashboard,
+)
+from copilot.dashboards import (
+    delete_item as dashboard_delete_item,
+)
+from copilot.dashboards import (
     update_item as dashboard_update_item,
 )
+from copilot.db import dispose_engine, get_engine, get_schema_ddl
 from copilot.saved import (
     add_previews_async,
     first_question_async,
@@ -92,6 +98,19 @@ def _configure_langsmith() -> None:
         os.environ["LANGCHAIN_ENDPOINT"] = settings.langsmith_endpoint
 
 
+# Phase 3.0 / ADR 0022 — MCP server mounted at ``/mcp``. We build the
+# ASGI sub-app once at import time so its lifespan handle is available
+# below when we wire the combined lifespan into the FastAPI app.
+#
+# ``path="/"`` is important: ``http_app()`` defaults to ``path="/mcp"``,
+# which combined with ``app.mount("/mcp", …)`` produces ``/mcp/mcp``.
+# See https://github.com/PrefectHQ/fastmcp/pull/2962 for the upstream
+# fix to this footgun.
+from copilot.mcp_server import mcp as _mcp_server  # noqa: E402
+
+_mcp_app = _mcp_server.http_app(path="/")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup / shutdown hook.
@@ -106,9 +125,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
          exist (idempotent ``CREATE TABLE IF NOT EXISTS``).
       4. Build the LangGraph agent once with the checkpointer attached
          and stash it on ``app.state``.
+      5. Enter the MCP server's session-manager lifespan (Phase 3.0).
+         FastAPI does NOT auto-propagate sub-app lifespans into mounted
+         routes, so without this step every ``/mcp`` request would 500
+         with "session_manager.run() needs to be executed".
 
     Shutdown:
-      * Dispose the SQLAlchemy pool and the checkpointer pool cleanly.
+      * Exit the MCP lifespan, dispose the SQLAlchemy pool and the
+        checkpointer pool cleanly. LIFO order matches AsyncExitStack.
     """
     _configure_langsmith()
     get_engine()
@@ -122,11 +146,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sql_graph = build_graph(checkpointer=await get_checkpointer())
     app.state.sql_graph = sql_graph
     app.state.graph = build_supervisor_graph(sql_graph)
-    try:
-        yield
-    finally:
-        await dispose_checkpointer()
-        dispose_engine()
+    async with _mcp_app.lifespan(app):
+        try:
+            yield
+        finally:
+            await dispose_checkpointer()
+            dispose_engine()
 
 
 app = FastAPI(
@@ -135,6 +160,12 @@ app = FastAPI(
     version="0.12.0",
     lifespan=lifespan,
 )
+
+# Phase 3.0 / ADR 0022 — mount the MCP server sub-app. Tools registered
+# via ``@mcp.tool`` in ``copilot.mcp_server`` become available at
+# ``POST /mcp`` (Streamable HTTP transport). Configure remote MCP
+# clients to point at e.g. ``https://data-copilot-api.fly.dev/mcp``.
+app.mount("/mcp", _mcp_app)
 
 # CORS is driven by ``CORS_ORIGINS`` (comma-separated). Default permits
 # the local Next.js dev server; production deploys (Fly.io, week 11)
@@ -360,7 +391,7 @@ async def save_conversation_endpoint(
     if req.title is None:
         try:
             first_q = await first_question_async(app.state.sql_graph, thread_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Don't fail the pin just because we can't auto-title —
             # ``derive_title`` falls back to a placeholder.
             log.warning(
@@ -559,7 +590,7 @@ async def add_dashboard_item_endpoint(
 
 @app.patch("/dashboards/{dashboard_id}/items/{item_id}")
 async def update_dashboard_item_endpoint(
-    dashboard_id: str,  # noqa: ARG001 — kept for URL shape; lookup is by item_id
+    dashboard_id: str,
     item_id: str,
     req: DashboardItemPatch,
 ) -> dict[str, Any]:
@@ -581,7 +612,7 @@ async def update_dashboard_item_endpoint(
 
 @app.delete("/dashboards/{dashboard_id}/items/{item_id}")
 async def delete_dashboard_item_endpoint(
-    dashboard_id: str,  # noqa: ARG001 — URL shape only
+    dashboard_id: str,
     item_id: str,
 ) -> dict[str, bool]:
     """Remove a card. 404 when the item doesn't exist."""

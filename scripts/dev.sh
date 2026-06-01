@@ -18,6 +18,9 @@
 #                                      # also print the cost breakdown (week 9)
 #   ./scripts/dev.sh eval [--experiment NAME] [--dry-run]
 #                                      # run A/B eval harness (week 6)
+#   ./scripts/dev.sh mcp               # run the MCP server in stdio mode
+#                                      # for Claude Desktop / Cursor / Cline
+#                                      # (Phase 3.0 / ADR 0022)
 #   ./scripts/dev.sh demo               # one-command end-to-end demo:
 #                                      # docker compose up + open browser
 
@@ -257,6 +260,15 @@ PYEOF
     cd apps/api
     uv run python -m copilot.eval "$@"
     ;;
+  mcp)
+    # Stdio MCP server (Phase 3.0 / ADR 0022). Used by LLM clients
+    # that spawn MCP servers as child processes (Claude Desktop, Cursor,
+    # Cline). Reads NL questions via the MCP wire protocol on stdin and
+    # writes responses on stdout — DO NOT add ``echo`` / ``print``
+    # statements above this line, they'd corrupt the JSON-RPC stream.
+    cd apps/api
+    exec uv run python -m copilot.mcp_server
+    ;;
   demo)
     # One-shot end-to-end demo:
     # 1. start the full stack (postgres + api + web)
@@ -293,7 +305,7 @@ PYEOF
     docker compose logs -f --tail=20 api web
     ;;
   *)
-    echo "Usage: $0 {up|down|api|web|test|test-integration|index|ask <question>|eval|demo}"
+    echo "Usage: $0 {up|down|api|web|test|test-integration|index|ask <question>|eval|mcp|demo}"
     exit 1
     ;;
 esac

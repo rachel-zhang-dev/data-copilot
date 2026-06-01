@@ -49,6 +49,13 @@ dependencies = [
     # ---------- Deployment & observability (week 11) ----------
     "prometheus-fastapi-instrumentator>=7.0.0",  # /metrics endpoint
     "redis>=5.0.0",                              # optional Redis-backed cache
+
+    # ---------- MCP server (Phase 3.0 / ADR 0022) ----------
+    # FastMCP v3.x is the standard wrapper around the Model Context
+    # Protocol Python SDK. We expose ``ask_data`` + schema / dashboard
+    # tools both via stdio (Claude Desktop, Cursor) and via Streamable
+    # HTTP mounted on the existing FastAPI app at ``/mcp``.
+    "fastmcp>=3.3.0",
 ]
 
 [project.optional-dependencies]

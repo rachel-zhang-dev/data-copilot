@@ -3,8 +3,8 @@
 > Text-to-SQL agent that **knows what it knows** — refuses gracefully when the schema can't answer, spots outliers + trends in every result, chains multi-step queries on "why" questions, saves the good conversations to a sidebar drawer, and lets you grid them into dashboards. Built on LangGraph + FastAPI + Next.js, deployed on Fly.io.
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-562%20passing-brightgreen.svg)](#testing)
-[![ADRs](https://img.shields.io/badge/ADRs-21-blue.svg)](docs/decisions/)
+[![Tests](https://img.shields.io/badge/tests-573%20passing-brightgreen.svg)](#testing)
+[![ADRs](https://img.shields.io/badge/ADRs-22-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
@@ -60,6 +60,7 @@ Then you pin the good ones to a sidebar drawer, and grid them into dashboards.
 | 📌 **Saved conversations** | One-click pin on any chat → it lands in a left-rail drawer; click to replay full history and keep talking. Zero-friction (no dialog), with inline title editing in the sidebar ([ADR 0019](docs/decisions/0019-saved-conversations.md)) |
 | 📐 **Dashboard cards** | Click "📌 Add to dashboard" on any answer → snapshot card lands on a 12-column react-grid-layout. Drag, resize, rename inline. Each card carries a "View source chat →" deep-link back to the conversation that produced it. Static snapshots = $0 / dashboard-load; deleting the source chat never breaks a card ([ADR 0020](docs/decisions/0020-dashboard-cards.md)) |
 | 🛡️ **Semantic SQL verification** | A critic LLM reviews every executed SQL + its rows; flags answers as `ok` / `suspicious` / `wrong`. `wrong` triggers one self-healing retry with reviewer feedback; `suspicious` surfaces a ⚠ low-confidence badge so the user knows to double-check. Measured uplift +2.0pp on the existing 50-case eval set ([report](docs/eval/20260601-143155-critic.md)); a dedicated `semantic_trap` category is the next eval expansion ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
+| 🔌 **MCP server (stdio + HTTP)** | The whole agent is exposed as a [Model Context Protocol](https://modelcontextprotocol.io/) server with 6 tools (`ask_data`, `list_tables`, `describe_table`, `run_select`, `list_dashboards`, `get_dashboard`) + one resource (`schema://overview`). Connect Claude Desktop / Cursor / Cline locally via stdio; connect Databricks Genie / hosted Claude remotely via `POST /mcp`. Same safety layer (sqlglot AST + read-only) gates the `run_select` escape hatch ([ADR 0022](docs/decisions/0022-mcp-server.md) · [setup guide](docs/mcp-setup.md)) |
 | 🔍 **Comparative eval harness** | 50 hand-written cases across 11 categories × **8 A/B experiments** (RAG on/off, self-heal, dialogue context, analyst, coverage_check, patterns_detection, investigate_mode, critic); markdown reports archived per run under [`docs/eval/`](docs/eval/) |
 | 💰 **Cost & resilience** | TTL embedding cache (in-memory or Redis via env var), per-turn USD breakdown, exponential-backoff retries on 429/5xx |
 | 📡 **Streaming Next.js UI** | SSE phase events, Vega-Lite charts, structured insight panel, HITL confirmation card, cost panel, saved-conversations drawer |
@@ -506,6 +507,7 @@ Sentry, and the Redis-migration design.
 | 2.2 ✅ | Phase 2 / step 2 — "View source chat →" back-link on every card. Deep-links into `/?conversation=<id>&turn=<n>`; chat panel reads searchParams server-side, auto-loads the conversation, scrolls the matching turn into view. Closes the analyst loop: card → source chat → follow-up question ([ADR 0020 §Phase 2.2](docs/decisions/0020-dashboard-cards.md)) |
 | 2.3 ✅ | Phase 2 / step 3 — SQL verification loop. A critic LLM reviews every executed SQL + its rows; verdict `wrong` triggers one self-healing retry with the reviewer's concerns in the prompt, `suspicious` shows a ⚠ low-confidence badge alongside the answer. 8th A/B experiment + `CriticBadge` component + 23 backend + 5 frontend tests ([ADR 0021](docs/decisions/0021-sql-verification-loop.md)) |
 | 2.3.1 ✅ | Phase 2 / step 3, dashboards half — `dashboard_items` gets a `critic JSONB` column; `DashboardCard` reuses the chat-side `CriticBadge` so a ⚠ suspicious turn keeps its warning after being pinned. Idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in the seed for safe dev re-runs ([ADR 0020 §Phase 2.3.1 + ADR 0021 §Frontend surface](docs/decisions/0020-dashboard-cards.md)) |
+| 3.0 ✅ | Phase 3 / step 0 — Model Context Protocol server. 6 tools + 1 resource expose the full agent to Claude Desktop / Cursor / Cline (stdio) and to Databricks Genie / hosted clients (Streamable HTTP at `/mcp`). The `run_select` escape hatch gates on the same `sql_safety` AST validator the agent uses internally — no DROP TABLE backdoor. 11 new pytest cases via FastMCP's in-memory `Client` ([ADR 0022](docs/decisions/0022-mcp-server.md)) |
 
 ## Project layout
 
