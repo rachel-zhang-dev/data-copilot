@@ -294,6 +294,59 @@ def test_finding_to_dict_round_trip() -> None:
     json.dumps(d)  # raises on non-serialisable values
 
 
+def test_finding_to_dict_coerces_numpy_scalars() -> None:
+    """Regression: a numpy.float64 / int64 in the payload must not
+    leak through ``finding_to_dict`` — LangGraph's PostgresSaver
+    msgpack serialiser refuses them at checkpoint time and the whole
+    turn blows up. Detector code wraps most reads in ``float(...)``,
+    but a missed cast (e.g. an arithmetic expression that keeps one
+    numpy operand) is enough to break the turn. The serialiser
+    boundary must be the safety net."""
+    import numpy as np
+
+    f = Finding(
+        kind="outlier",
+        column="n",
+        severity="notable",
+        description_key="high_value_outlier",
+        payload={
+            "value": np.float64(13.0),
+            "z_score": np.float64(2.5),
+            "n_points": np.int64(7),
+            # Nested structures are walked recursively.
+            "histogram_bounds": [np.float64(1.0), np.float64(13.0)],
+            "meta": {"mean": np.float64(4.3)},
+        },
+    )
+    d = finding_to_dict(f)
+    # Type checks — every scalar must be a Python builtin.
+    assert type(d["payload"]["value"]) is float
+    assert type(d["payload"]["z_score"]) is float
+    assert type(d["payload"]["n_points"]) is int
+    assert all(type(x) is float for x in d["payload"]["histogram_bounds"])
+    assert type(d["payload"]["meta"]["mean"]) is float
+    # Value preservation.
+    assert d["payload"]["value"] == 13.0
+
+
+def test_finding_to_dict_handles_numpy_array_payload() -> None:
+    """numpy arrays should be converted to plain lists of Python
+    floats (the detector currently doesn't put arrays in payloads,
+    but future detectors might)."""
+    import numpy as np
+
+    f = Finding(
+        kind="trend",
+        column="n",
+        severity="notable",
+        description_key="trend_up",
+        payload={"residuals": np.array([0.1, 0.2, 0.3])},
+    )
+    d = finding_to_dict(f)
+    assert isinstance(d["payload"]["residuals"], list)
+    assert all(type(x) is float for x in d["payload"]["residuals"])
+
+
 # ===========================================================================
 # Module-level constants — guard against accidental tightening
 # ===========================================================================

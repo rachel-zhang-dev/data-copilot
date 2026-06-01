@@ -397,13 +397,44 @@ def detect_patterns(rows: list[dict[str, Any]]) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
+def _to_python(value: Any) -> Any:
+    """Recursively coerce numpy scalars / arrays inside ``value`` to
+    Python builtins.
+
+    Why: LangGraph's PostgresSaver serialises state via msgpack, and
+    msgpack rejects ``numpy.float64`` / ``numpy.int64`` even though
+    ``json`` happily accepts them (numpy scalars subclass Python
+    ``float`` / ``int`` so ``json.dumps`` is lenient). Without this
+    cleanup, ``state['patterns']`` would silently pass through the
+    in-memory layer and only blow up the moment LangGraph tries to
+    checkpoint the turn — a confusing failure mode.
+
+    Detector code already wraps most numpy reads in ``float(...)``,
+    but a single missed cast (e.g. an arithmetic expression where
+    one operand stays numpy) is enough to break the whole turn. Doing
+    the conversion at the serialisation boundary makes the detector
+    code self-contained and the contract single-pointed.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [_to_python(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {k: _to_python(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_python(v) for v in value]
+    return value
+
+
 def finding_to_dict(f: Finding) -> dict[str, Any]:
-    """JSON-friendly view of a Finding. The node uses this to put
-    findings into ``state.patterns`` and the AskResponse payload."""
+    """JSON / msgpack-friendly view of a Finding. The node uses this
+    to put findings into ``state.patterns`` and the AskResponse
+    payload; numpy scalars in the payload are coerced to Python
+    builtins so the LangGraph checkpoint serialiser is happy."""
     return {
         "kind": f.kind,
         "column": f.column,
         "severity": f.severity,
         "description_key": f.description_key,
-        "payload": dict(f.payload),
+        "payload": _to_python(dict(f.payload)),
     }
