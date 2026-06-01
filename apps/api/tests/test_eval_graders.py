@@ -147,6 +147,35 @@ def test_pattern_assertions_skipped_when_unset() -> None:
     assert all("pattern" not in c.name for c in g.checks)
 
 
+# Regression: defensive str() in sql_* checks ------------------------------
+
+
+def test_sql_must_contain_coerces_int_needle() -> None:
+    """YAML auto-parses bare digits as ints (``[orders, 1997]`` →
+    ``[str, int]``). The grader must defensively ``str()`` each
+    needle so a typo in cases.yaml doesn't crash the entire eval
+    run mid-way through experiment #1 (observed in Phase 2.1 manual
+    eval run; PR ba54752 era)."""
+    case = _case(Expect(sql_must_contain=("orders", 1997)))  # type: ignore[arg-type]
+    run = _run(sql="SELECT * FROM orders WHERE year = 1997")
+    g = grade(case, run)
+    assert g.passed
+
+
+def test_sql_should_contain_any_coerces_int_needle() -> None:
+    case = _case(Expect(sql_should_contain_any=(2026, "month")))  # type: ignore[arg-type]
+    run = _run(sql="SELECT month, count(*) FROM orders")
+    g = grade(case, run)
+    assert g.passed
+
+
+def test_sql_must_not_contain_coerces_int_needle() -> None:
+    case = _case(Expect(sql_must_not_contain=(1996,)))  # type: ignore[arg-type]
+    run = _run(sql="SELECT * FROM orders WHERE year = 1997")
+    g = grade(case, run)
+    assert g.passed
+
+
 # sql_must_contain ----------------------------------------------------------
 
 

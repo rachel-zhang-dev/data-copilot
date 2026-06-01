@@ -85,7 +85,13 @@ def _check_sql_must_contain(expect: Expect, run: RunResult) -> list[CheckResult]
     sql = (run.sql or "").lower()
     out: list[CheckResult] = []
     for needle in expect.sql_must_contain:
-        ok = needle.lower() in sql
+        # ``str()`` defends against YAML auto-coercing bare numbers
+        # (e.g. ``sql_must_contain: [orders, 1997]`` parses 1997 as
+        # an int). All sql_* fields are documented as "tokens to
+        # search for" — coerce here so a cases.yaml typo doesn't
+        # crash an entire eval run.
+        needle_str = str(needle).lower()
+        ok = needle_str in sql
         out.append(
             CheckResult(
                 f"sql_has({needle!r})",
@@ -102,7 +108,8 @@ def _check_sql_must_not_contain(expect: Expect, run: RunResult) -> list[CheckRes
     sql = (run.sql or "").lower()
     out: list[CheckResult] = []
     for needle in expect.sql_must_not_contain:
-        ok = needle.lower() not in sql
+        needle_str = str(needle).lower()
+        ok = needle_str not in sql
         out.append(
             CheckResult(
                 f"sql_lacks({needle!r})",
@@ -117,7 +124,7 @@ def _check_sql_should_contain_any(expect: Expect, run: RunResult) -> list[CheckR
     if not expect.sql_should_contain_any:
         return []
     sql = (run.sql or "").lower()
-    found_any = any(n.lower() in sql for n in expect.sql_should_contain_any)
+    found_any = any(str(n).lower() in sql for n in expect.sql_should_contain_any)
     return [
         CheckResult(
             f"sql_has_any({list(expect.sql_should_contain_any)})",
