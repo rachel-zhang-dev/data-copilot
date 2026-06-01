@@ -118,6 +118,13 @@ def _drill_eligibility(hop_count: int, hop_budget: int, intent: str | None) -> s
 
     * hop_count < hop_budget → drill_down allowed.
     * hop_count >= hop_budget → must refuse further.
+
+    Phase 1.3.1 — investigate-mode wording moves from soft "SHOULD"
+    to imperative "MUST emit … unless stopping criteria are met"
+    because the soft form let DeepSeek-class analysts terminate after
+    a single hop on multi-part research questions (observed in eval
+    + manual smoke). The matching stopping criteria live in the
+    SYSTEM prompt under "INVESTIGATE-MODE STOPPING CRITERION".
     """
     if hop_count >= hop_budget:
         return (
@@ -127,9 +134,9 @@ def _drill_eligibility(hop_count: int, hop_budget: int, intent: str | None) -> s
     remaining = hop_budget - hop_count
     if intent == "investigate":
         return (
-            "You SHOULD emit a drill_down if the user's research question "
-            "isn't fully answered yet. "
-            f"{remaining} hop(s) remain — make this one count."
+            f"You MUST emit a drill_down (or stop ONLY if the system "
+            f"prompt's stopping criteria are met). {remaining} hop(s) "
+            "remain — make each one count."
         )
     return (
         "You MAY emit a single drill_down request if the rows hint at "

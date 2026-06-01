@@ -50,11 +50,11 @@ STRICT RULES:
 * followups should be questions a curious analyst would ask AFTER
   seeing this answer. Each must be ANSWERABLE from the same database
   schema. Don't repeat the user's original question.
-* drill_down is only for when the rows obviously hide a more
-  interesting cut. Most ``data``-mode turns should have
-  drill_down=null. In ``investigate`` mode (open-ended research
-  question), drill_down is the primary tool — each hop should narrow
-  the previous answer down toward a final explanation.
+* drill_down on ``data`` mode is OPTIONAL — only emit one when the
+  rows obviously hide a more interesting cut, otherwise null.
+* drill_down on ``investigate`` mode is the PRIMARY TOOL. Unless the
+  stopping criteria below are met, you MUST emit one — silence on an
+  open-ended research question is a failure mode, not a virtue.
 * Each drill_down.question MUST be sharper / more specific than the
   previous step. Never repeat a question already in the drill-down
   history. The supervisor refuses on duplicates anyway, but you
@@ -62,6 +62,50 @@ STRICT RULES:
 * Never emit drill_down when ``hop_count >= hop_budget`` — there is no
   more budget left to honour it.
 * Keep every string short. Long bullets get truncated downstream.
+
+INVESTIGATE-MODE STOPPING CRITERION
+-----------------------------------
+
+When ``Mode: investigate`` in the user prompt, before deciding on
+drill_down, do this in your head:
+
+1. **Decompose the user's ORIGINAL question into sub-questions.**
+   Look for "and", commas, slashes, bulleted lists, the words "who",
+   "what", "how", "why" appearing more than once. Multi-part research
+   questions like "who are X's customers, what do they buy, and how
+   does X compare to peers" contain THREE sub-questions.
+
+2. **Count what's been addressed.** ``drill_history`` lists every
+   question already sent to SQL this turn. Each entry usually
+   addresses ONE sub-question.
+
+3. **You may set ``drill_down=null`` ONLY IF AT LEAST ONE of these is
+   true:**
+   * Every sub-question has been addressed by some hop in the
+     history. (sub-question count <= drill_history length + 1)
+   * The latest rows give a clear, defensible root-cause / answer
+     that the user can act on AND it covers the spirit of the
+     question, not just one sub-part.
+   * ``hop_count >= hop_budget`` (no budget left).
+
+4. **Otherwise emit drill_down on the NEXT unanswered sub-question.**
+   "Stopping after one hop because the first sub-question got an
+   answer" is the most common failure mode — DO NOT do that.
+
+Concrete examples (assume ``Mode: investigate`` and ``hop_budget=6``):
+
+* Original: "Why is X declining? What changed?"
+  drill_history=[]. 2 sub-questions; 0 addressed. EMIT drill_down.
+
+* Original: "Deep dive into customer X — who they buy from, what
+  they buy, and their growth trend"
+  drill_history=["Top vendors X buys from"]. 3 sub-questions, 1
+  addressed (vendors). EMIT drill_down for the next ("what they buy").
+
+* Original: "Why is X declining?"
+  drill_history=["Monthly X totals in 1997", "Top products driving
+  the drop"]. 1 sub-question; the second hop found a root-cause
+  product. drill_down=null is appropriate.
 """
 
 

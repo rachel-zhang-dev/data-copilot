@@ -268,14 +268,32 @@ def test_drill_eligibility_at_budget_refuses() -> None:
     assert "exhausted" in msg
 
 
-def test_drill_eligibility_investigate_encourages_drilling() -> None:
-    """investigate mode uses 'SHOULD' wording so the LLM stays
-    aggressive about chaining queries until the question is answered."""
+def test_drill_eligibility_investigate_uses_imperative_wording() -> None:
+    """Phase 1.3.1 — investigate mode upgraded from soft "SHOULD" to
+    imperative "MUST emit drill_down (or stop ONLY if stopping
+    criteria are met)" because the soft form let DeepSeek-class
+    analysts terminate after a single hop on multi-part research
+    questions. The matching stopping criteria live in
+    ``ANALYST_SYSTEM`` § INVESTIGATE-MODE STOPPING CRITERION."""
     from copilot.agents.analyst.nodes import _drill_eligibility
 
     msg = _drill_eligibility(hop_count=1, hop_budget=6, intent="investigate")
-    assert "SHOULD" in msg
+    assert "MUST emit" in msg
+    assert "stopping criteria" in msg
     assert "5 hop" in msg  # 6 - 1 = 5 remaining
+
+
+def test_analyst_system_carries_stopping_criterion_block() -> None:
+    """The investigate stopping criterion is the linchpin of Phase
+    1.3.1. Guard the section so a casual prompt rewrite can't drop
+    it without the test noticing."""
+    from copilot.agents.analyst.prompts import ANALYST_SYSTEM
+
+    assert "INVESTIGATE-MODE STOPPING CRITERION" in ANALYST_SYSTEM
+    # The three stopping rules should all be there.
+    assert "Every sub-question has been addressed" in ANALYST_SYSTEM
+    assert "clear, defensible root-cause" in ANALYST_SYSTEM
+    assert "hop_count >= hop_budget" in ANALYST_SYSTEM
 
 
 def test_build_request_carries_intent_budget_history() -> None:
