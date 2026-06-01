@@ -335,6 +335,14 @@ class AskResponse(BaseModel):
     # ``wrong`` verdicts trigger one self-healing retry before the
     # badge is shown. ``None`` on chitchat / refused / explore / etc.
     critic: dict[str, Any] | None = None
+    # Phase 3.1 — semantic-layer routing (ADR 0023). When the
+    # ``metric_router`` decided this turn was answerable by the
+    # deterministic semantic layer, ``path == "semantic_layer"`` and
+    # ``spec`` carries the structured {metric, dimensions, time_range,
+    # filters} the resolver compiled. Otherwise ``path == "fallback"``
+    # — the LLM text-to-SQL pipeline took over. FE can render a small
+    # "⚖ computed via semantic layer" pill in the former case.
+    semantic: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +742,7 @@ def _build_ask_response(
             coverage=result.get("coverage"),
             patterns=result.get("patterns"),
             critic=result.get("critic"),
+            semantic=result.get("semantic"),
         )
 
     return AskResponse(
@@ -758,6 +767,7 @@ def _build_ask_response(
         coverage=result.get("coverage"),
         patterns=result.get("patterns"),
         critic=result.get("critic"),
+        semantic=result.get("semantic"),
     )
 
 

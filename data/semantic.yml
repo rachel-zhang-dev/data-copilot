@@ -1,0 +1,136 @@
+# Semantic model for Northwind (Phase 3.1 / ADR 0023).
+#
+# Defines metrics, dimensions, and table relationships that the
+# semantic-layer router compiles deterministically into SQL — never
+# letting the LLM guess JOIN cardinality or aggregation grain for the
+# concepts listed here. Cortex Analyst / Cube / dbt Semantic Layer all
+# use a similar shape; we keep ours minimal because Northwind has
+# 14 tables, not 1,400.
+#
+# Hand-edit this file to add metrics. The semantic loader validates
+# at startup (all referenced tables must exist as
+# ``copilot.db.list_tables()``; all metric/dimension ``requires``
+# entries must be reachable via the declared relationships); a typo
+# fails fast with a clear error instead of producing wrong SQL at
+# runtime.
+#
+# Concepts the router CANNOT answer fall back to the LLM text-to-SQL
+# pipeline (the "routing mode" pattern Snowflake Cortex uses). That
+# fallback keeps the agent flexible while the semantic layer holds
+# the line on the most common questions.
+
+version: 1
+description: "Northwind core metrics — covers ~80% of common BI questions about customers, orders, revenue, and products."
+
+# Global table aliases. Every metric / dimension / relationship
+# expression below uses these short names instead of repeating the
+# table name. Keeps SQL output readable and forces alias consistency
+# across all definitions.
+table_aliases:
+  customers: c
+  orders: o
+  order_details: od
+  products: p
+  categories: cat
+  employees: e
+  suppliers: sup
+
+# Time column used by the router's time-range compilation. Single
+# column today (Northwind only has order_date as a meaningful time
+# axis); the loader is shaped to accept multiple in the future.
+time_columns:
+  - table: orders
+    column: order_date
+
+# Metrics — business measurements. The ``expression`` is the literal
+# SQL fragment that computes the value (using table aliases above).
+# ``requires`` is the minimum set of tables the metric depends on; the
+# resolver unions it with dimension requires + time-filter requires
+# to decide which JOINs to emit.
+metrics:
+  - name: revenue
+    description: "Total revenue from order lines (unit_price × quantity, discount applied)"
+    expression: "SUM(od.unit_price * od.quantity * (1 - od.discount))"
+    requires: [order_details]
+    format: currency
+
+  - name: order_count
+    description: "Number of distinct orders"
+    expression: "COUNT(DISTINCT o.order_id)"
+    requires: [orders]
+    format: integer
+
+  - name: customer_count
+    description: "Number of distinct customers"
+    expression: "COUNT(DISTINCT c.customer_id)"
+    requires: [customers]
+    format: integer
+
+  - name: avg_order_value
+    description: "Average revenue per order (revenue ÷ order count)"
+    expression: "SUM(od.unit_price * od.quantity * (1 - od.discount)) / NULLIF(COUNT(DISTINCT o.order_id), 0)"
+    requires: [order_details, orders]
+    format: currency
+
+  - name: product_count
+    description: "Number of distinct products"
+    expression: "COUNT(DISTINCT p.product_id)"
+    requires: [products]
+    format: integer
+
+  - name: units_sold
+    description: "Total units sold across all order lines"
+    expression: "SUM(od.quantity)"
+    requires: [order_details]
+    format: integer
+
+# Dimensions — how to slice metrics (the GROUP BY targets). Each has a
+# SQL fragment and a ``requires`` list (the tables it pulls from).
+dimensions:
+  - name: country
+    description: "Customer's country"
+    expression: "c.country"
+    requires: [customers]
+
+  - name: category
+    description: "Product category name"
+    expression: "cat.category_name"
+    requires: [categories, products]
+
+  - name: employee
+    description: "Employee full name (sales rep on the order)"
+    expression: "e.first_name || ' ' || e.last_name"
+    requires: [employees]
+
+  - name: month
+    description: "Order month (truncated to month start)"
+    expression: "DATE_TRUNC('month', o.order_date)"
+    requires: [orders]
+
+  - name: year
+    description: "Order year (integer)"
+    expression: "EXTRACT(YEAR FROM o.order_date)::int"
+    requires: [orders]
+
+# Relationships — how tables join. The resolver walks this list as an
+# undirected graph and emits the minimum spanning set of JOINs to
+# cover all required tables. Aliases come from ``table_aliases``
+# above; we DON'T re-state them per relationship.
+relationships:
+  - tables: [orders, customers]
+    join: "o.customer_id = c.customer_id"
+
+  - tables: [orders, order_details]
+    join: "o.order_id = od.order_id"
+
+  - tables: [order_details, products]
+    join: "od.product_id = p.product_id"
+
+  - tables: [products, categories]
+    join: "p.category_id = cat.category_id"
+
+  - tables: [orders, employees]
+    join: "o.employee_id = e.employee_id"
+
+  - tables: [products, suppliers]
+    join: "p.supplier_id = sup.supplier_id"

@@ -204,6 +204,7 @@ export function ChatPanel({
               coverage: null,
               patterns: null,
               critic: null,
+              semantic: null,
             },
             pending: null,
             error: null,

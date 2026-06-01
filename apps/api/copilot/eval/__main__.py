@@ -36,6 +36,7 @@ from copilot.eval.experiments import (
     run_patterns_detection_ab,
     run_schema_rag_ab,
     run_self_healing_ab,
+    run_semantic_layer_ab,
 )
 from copilot.eval.experiments._common import Comparison
 from copilot.eval.reports.markdown import render_comparison
@@ -65,6 +66,8 @@ _EXPERIMENTS = {
     "investigate_mode": run_investigate_mode_ab,
     # Phase 2.3 / ADR 0021
     "critic": run_critic_ab,
+    # Phase 3.1 / ADR 0023
+    "semantic_layer": run_semantic_layer_ab,
 }
 
 

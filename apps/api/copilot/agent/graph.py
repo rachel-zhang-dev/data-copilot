@@ -95,6 +95,12 @@ from copilot.agent.risk import (
     route_after_confirmation,
     route_after_risk,
 )
+from copilot.agent.semantic_node import (
+    metric_resolver_node,
+    metric_router_node,
+    route_after_metric_resolver,
+    route_after_metric_router,
+)
 from copilot.agent.state import AgentState
 from copilot.agent.visualize import visualize_node
 
@@ -120,6 +126,14 @@ def build_graph(
     workflow.add_node("retrieve_schema", retrieve_schema_node)
     workflow.add_node("coverage_check", coverage_check_node)
     workflow.add_node("explain_uncovered", explain_uncovered_node)
+    # Phase 3.1 / ADR 0023 — semantic-layer router + resolver. Sit
+    # between coverage_check and generate_sql; on the "answerable"
+    # path metric_resolver compiles SQL deterministically and feeds
+    # straight into validate_sql (skipping the LLM SQL writer
+    # entirely). On the fallback path control flows to generate_sql
+    # as if the semantic layer had never been there.
+    workflow.add_node("metric_router", metric_router_node)
+    workflow.add_node("metric_resolver", metric_resolver_node)
     workflow.add_node("generate_sql", nodes.generate_sql_node)
     workflow.add_node("validate_sql", nodes.validate_sql_node)
     workflow.add_node("check_risk", check_risk_node)
@@ -154,16 +168,43 @@ def build_graph(
         },
     )
 
-    # Data branch: schema retrieval → coverage gate → SQL writing
-    # (Phase 1.1 inserts coverage_check between the two; on refuse,
-    # the graph diverts to explain_uncovered and skips SQL entirely).
+    # Data branch: schema retrieval → coverage gate → semantic
+    # router → (semantic_layer → metric_resolver) | (fallback →
+    # generate_sql). Phase 1.1 inserted coverage_check between
+    # retrieve_schema and the SQL writer; Phase 3.1 inserts the
+    # semantic layer between coverage_check and generate_sql so the
+    # deterministic path gets a chance before the LLM one.
     workflow.add_edge("retrieve_schema", "coverage_check")
     workflow.add_conditional_edges(
         "coverage_check",
         route_after_coverage,
         {
-            "generate_sql": "generate_sql",
+            # Was "generate_sql" before Phase 3.1; the semantic router
+            # now intercepts. When the router declines, control
+            # eventually reaches generate_sql via route_after_metric_router.
+            "generate_sql": "metric_router",
             "explain_uncovered": "explain_uncovered",
+        },
+    )
+    workflow.add_conditional_edges(
+        "metric_router",
+        route_after_metric_router,
+        {
+            "metric_resolver": "metric_resolver",
+            "generate_sql": "generate_sql",
+        },
+    )
+    workflow.add_conditional_edges(
+        "metric_resolver",
+        route_after_metric_resolver,
+        {
+            # Happy path: deterministic SQL was compiled; share the
+            # validate → risk → execute → critic pipeline with
+            # LLM-written SQL. The shared validate_sql guarantees
+            # LIMIT injection + sqlglot sanity even on our own SQL.
+            "validate_sql": "validate_sql",
+            # ResolverError mid-compile: re-enter the fallback path.
+            "generate_sql": "generate_sql",
         },
     )
     workflow.add_edge("generate_sql", "validate_sql")

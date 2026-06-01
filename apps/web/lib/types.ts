@@ -91,6 +91,38 @@ export interface Critic {
   concerns: string[];
 }
 
+// Phase 3.1 — semantic-layer routing (ADR 0023).
+export type SemanticPath = "semantic_layer" | "fallback";
+
+export interface SemanticSpec {
+  metric: string;
+  dimensions: string[];
+  time_range: { year?: number } | null;
+  filters: Array<{
+    dimension: string;
+    op: "=" | "in";
+    value: string | number | Array<string | number>;
+  }>;
+  limit?: number;
+}
+
+export interface Semantic {
+  path: SemanticPath;
+  // True when the router decided the question was answerable via the
+  // semantic layer. ``path === "semantic_layer"`` always implies
+  // ``answerable === true``.
+  answerable?: boolean;
+  reason?: string;
+  // Populated on the semantic path so the FE can render a pill like
+  // "computed: revenue × country (year=1997)".
+  spec?: SemanticSpec;
+  // Populated by the resolver — the literal SQL it compiled.
+  sql?: string;
+  // Populated only when the resolver tripped on a ResolverError and
+  // the graph re-routed to the LLM fallback.
+  compile_error?: string;
+}
+
 export interface AskResponse {
   answer: string;
   conversation_id: string;
@@ -121,6 +153,12 @@ export interface AskResponse {
   // (the only path the critic runs on); the FE shows a low-
   // confidence badge when verdict is "suspicious" or "wrong".
   critic: Critic | null;
+  // Phase 3.1 — semantic-layer routing. Present when the data branch
+  // hit the metric_router. ``path === "semantic_layer"`` means the
+  // answer was compiled deterministically; ``path === "fallback"``
+  // means the LLM text-to-SQL pipeline took over (and the pill stays
+  // hidden).
+  semantic: Semantic | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ from copilot.eval.experiments.investigate_mode import run_investigate_mode_ab
 from copilot.eval.experiments.patterns_detection import run_patterns_detection_ab
 from copilot.eval.experiments.schema_rag import run_schema_rag_ab
 from copilot.eval.experiments.self_healing import run_self_healing_ab
+from copilot.eval.experiments.semantic_layer import run_semantic_layer_ab
 
 __all__ = [
     "run_analyst_ab",
@@ -24,4 +25,5 @@ __all__ = [
     "run_patterns_detection_ab",
     "run_schema_rag_ab",
     "run_self_healing_ab",
+    "run_semantic_layer_ab",
 ]

@@ -58,6 +58,14 @@ PATTERNS_DETECTION_ENABLED: bool = True
 # critic catches across the eval set.
 CRITIC_ENABLED: bool = True
 
+# Phase 3.1 — semantic-layer router (ADR 0023). When False,
+# ``metric_router_node`` short-circuits to ``path=fallback`` without
+# an LLM call, so every question goes straight to the existing
+# text-to-SQL pipeline. The ninth A/B flips this to measure how
+# much the semantic layer raises accuracy on the questions covered
+# by ``data/semantic.yml``.
+SEMANTIC_LAYER_ENABLED: bool = True
+
 
 @contextmanager
 def override(
@@ -69,6 +77,7 @@ def override(
     coverage_check_enabled: bool | None = None,
     patterns_detection_enabled: bool | None = None,
     critic_enabled: bool | None = None,
+    semantic_layer_enabled: bool | None = None,
 ) -> Iterator[None]:
     """Flip flags for the duration of the ``with`` block.
 
@@ -78,6 +87,7 @@ def override(
     """
     global SCHEMA_RAG_ENABLED, DIALOGUE_CONTEXT_ENABLED, ANALYST_ENABLED
     global COVERAGE_CHECK_ENABLED, PATTERNS_DETECTION_ENABLED, CRITIC_ENABLED
+    global SEMANTIC_LAYER_ENABLED
 
     prev_rag = SCHEMA_RAG_ENABLED
     prev_dlg = DIALOGUE_CONTEXT_ENABLED
@@ -85,6 +95,7 @@ def override(
     prev_coverage = COVERAGE_CHECK_ENABLED
     prev_patterns = PATTERNS_DETECTION_ENABLED
     prev_critic = CRITIC_ENABLED
+    prev_semantic = SEMANTIC_LAYER_ENABLED
     prev_budget = dict(_nodes_mod.RETRY_BUDGET)
 
     if schema_rag_enabled is not None:
@@ -99,6 +110,8 @@ def override(
         PATTERNS_DETECTION_ENABLED = patterns_detection_enabled
     if critic_enabled is not None:
         CRITIC_ENABLED = critic_enabled
+    if semantic_layer_enabled is not None:
+        SEMANTIC_LAYER_ENABLED = semantic_layer_enabled
     if retry_budget is not None:
         # Mutate in place so existing references to the dict (e.g. in
         # tests that imported the module attribute) see the change.
@@ -114,5 +127,6 @@ def override(
         COVERAGE_CHECK_ENABLED = prev_coverage
         PATTERNS_DETECTION_ENABLED = prev_patterns
         CRITIC_ENABLED = prev_critic
+        SEMANTIC_LAYER_ENABLED = prev_semantic
         _nodes_mod.RETRY_BUDGET.clear()
         _nodes_mod.RETRY_BUDGET.update(prev_budget)

@@ -80,6 +80,18 @@ class ExperimentConfig:
     and pass under treatment; everything else should stay flat
     modulo one extra LLM call's worth of cost / latency."""
 
+    semantic_layer_enabled: bool = True
+    """When False, ``metric_router_node`` short-circuits to
+    ``path=fallback`` so every question goes straight through the
+    LLM text-to-SQL pipeline (pre-Phase-3.1 behaviour). Used by A9
+    (the semantic_layer A/B) to measure how much the deterministic
+    compiler raises accuracy on the questions covered by
+    ``data/semantic.yml``. Categories that map cleanly to the
+    semantic model (``aggregation``, ``count``, ``join``, simple
+    ``single_table_filter``) should improve under treatment; everything
+    else should stay flat or shift slightly due to the extra router
+    LLM call per turn."""
+
     notes: str = ""
     """Free-form description of what this run is supposed to test;
     surfaces in the markdown report header."""
@@ -173,4 +185,18 @@ WITHOUT_CRITIC = ExperimentConfig(
         "filter mistakes); other categories should stay flat."
     ),
     extra_tags=("a8", "critic_off"),
+)
+
+WITHOUT_SEMANTIC_LAYER = ExperimentConfig(
+    label="semantic_layer_off",
+    semantic_layer_enabled=False,
+    notes=(
+        "Phase 3.1 semantic layer disabled — ``metric_router_node`` "
+        "short-circuits to fallback and every data question goes "
+        "through the LLM text-to-SQL pipeline (pre-Phase-3.1 "
+        "behaviour). Categories covered by ``data/semantic.yml`` "
+        "(aggregation / count / simple joins) should regress; "
+        "uncovered categories should stay flat."
+    ),
+    extra_tags=("a9", "semantic_layer_off"),
 )

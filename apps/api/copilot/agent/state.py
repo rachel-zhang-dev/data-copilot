@@ -272,6 +272,36 @@ class AgentState(TypedDict, total=False):
     ``kpi`` / ``table`` (the UI renders those directly from
     ``sql_result``) and outside the data success path."""
 
+    # ---------- Phase 3.1: semantic layer router (ADR 0023) ----------
+    semantic: dict[str, Any]
+    """Verdict from ``metric_router_node`` on whether this question
+    can be answered via the deterministic semantic layer.
+
+    Shape::
+
+        {
+            "path": "semantic_layer" | "fallback",
+            "answerable": bool,
+            "reason": str,
+            "spec": {                    # only when path == "semantic_layer"
+                "metric": str,
+                "dimensions": [str, ...],
+                "time_range": {...} | None,
+                "filters": [...],
+                "limit": int,
+            },
+            "sql": str,                  # populated by metric_resolver
+            "compile_error": str,        # only when the resolver hit ResolverError
+        }
+
+    ``semantic_layer`` path: SQL was compiled deterministically by
+    ``metric_resolver_node`` — never went through the LLM SQL writer.
+    ``fallback`` path: router declined OR compile failed; the existing
+    text-to-SQL pipeline takes over from ``generate_sql``.
+
+    ``None`` outside the data branch (chitchat / refused / explore
+    never hit the router)."""
+
     # ---------- Outputs added in Phase 2.3 (ADR 0021) ----------
     critic: dict[str, Any]
     """Verdict from ``critique_sql_node`` on whether the executed SQL

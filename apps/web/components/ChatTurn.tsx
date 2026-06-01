@@ -11,6 +11,7 @@ import { CriticBadge } from "./CriticBadge";
 import { InsightPanel } from "./InsightPanel";
 import { PendingConfirmation } from "./PendingConfirmation";
 import { SchemaTour } from "./SchemaTour";
+import { SemanticPill } from "./SemanticPill";
 
 /**
  * One turn in the chat history. Composes the smaller display
@@ -85,6 +86,13 @@ export function ChatTurn({
               {result.answer && (
                 <p className="text-base text-(--color-fg)">{result.answer}</p>
               )}
+              {/* Phase 3.1 — small "⚖ computed deterministically" pill
+                  on the semantic-layer path. Sits ABOVE the critic
+                  badge / insight so a reader knows the provenance
+                  before the content. Renders nothing on the fallback
+                  path (so the chat surface looks identical to the
+                  pre-Phase-3.1 era when the LLM wrote SQL itself). */}
+              <SemanticPill semantic={result.semantic} />
               {/* Phase 2.3 — critic badge sits ABOVE the insight so users
                   see the "double-check this" warning before they read the
                   numbers it's warning about. Renders nothing on ok. */}
