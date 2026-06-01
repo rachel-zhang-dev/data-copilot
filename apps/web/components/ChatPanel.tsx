@@ -27,11 +27,30 @@ const SIDEBAR_COLLAPSED_KEY = "data-copilot:sidebar-collapsed";
  *
  * No Zustand, no Redux. The state machine is small enough that
  * ``useState`` + careful ``useCallback`` keeps it readable.
+ *
+ * Phase 2.2 — Deep-link from a dashboard card: the host page may pass
+ * ``initialConversationId`` (and optionally ``initialTurnIndex``).
+ * When set, we auto-invoke ``loadSavedConversation`` on first render
+ * and scroll the matching turn into view. This is what makes the
+ * "View source chat →" link on every dashboard card actually land
+ * the user where they wanted to go.
  */
-export function ChatPanel() {
+export function ChatPanel({
+  initialConversationId = null,
+  initialTurnIndex = null,
+}: {
+  initialConversationId?: string | null;
+  initialTurnIndex?: number | null;
+} = {}) {
   const [turns, setTurns] = useState<ChatTurnViewModel[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Phase 2.2 — when set, a useEffect tries to find the matching turn
+  // DOM node and scroll it into view. Cleared once the scroll lands
+  // so subsequent ``turns`` updates (new live turns) don't re-target.
+  const [pendingScrollToTurn, setPendingScrollToTurn] = useState<
+    number | null
+  >(null);
   // Phase 1.4 — saved-conversation drawer state. The drawer's
   // collapsed flag is persisted to localStorage so it survives
   // reloads. ``savedItems`` is refetched on mount and whenever the
@@ -156,7 +175,13 @@ export function ChatPanel() {
           pendingQuestion = m.content;
         } else if (m.role === "assistant") {
           replayed.push({
-            id: `replay-${Math.random().toString(36).slice(2, 9)}`,
+            // Phase 2.2 — IDs are now ``replay-<1-based-turn-index>``
+            // (was a random string) so a deep-link from a dashboard
+            // card can locate the right DOM node via
+            // ``[data-turn-id="replay-N"]``. The index matches the
+            // ``turn_index`` we set just below and the
+            // ``source_turn_index`` stored on dashboard cards.
+            id: `replay-${replayed.length + 1}`,
             question: pendingQuestion,
             phases: [],
             result: {
@@ -191,6 +216,41 @@ export function ChatPanel() {
       console.error("loadConversation failed:", err);
     }
   }, []);
+
+  // Phase 2.2 — Deep-link from a dashboard card. Runs ONCE on mount
+  // when the host page hands us ``?conversation=<id>&turn=<n>`` from
+  // the URL. The ``loadedRef`` guard makes the effect idempotent
+  // across React 19 strict-mode double-mount (which would otherwise
+  // double-POST the load endpoint in dev).
+  const deepLinkLoadedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkLoadedRef.current) return;
+    if (!initialConversationId) return;
+    deepLinkLoadedRef.current = true;
+    void loadSavedConversation(initialConversationId);
+    if (initialTurnIndex && initialTurnIndex > 0) {
+      setPendingScrollToTurn(initialTurnIndex);
+    }
+  }, [initialConversationId, initialTurnIndex, loadSavedConversation]);
+
+  // Phase 2.2 — Once the replay turns hit the DOM, scroll the
+  // requested one into view. Fires only when ``pendingScrollToTurn``
+  // is set; clears it after the first successful scroll so that
+  // subsequent live turns don't keep re-anchoring on the deep-link
+  // target. Falls through cleanly when the target turn doesn't
+  // exist (e.g. the dashboard card was extracted from a deleted
+  // conversation).
+  useEffect(() => {
+    if (pendingScrollToTurn === null) return;
+    if (turns.length === 0) return;
+    const el = document.querySelector(
+      `[data-turn-id="replay-${pendingScrollToTurn}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    setPendingScrollToTurn(null);
+  }, [pendingScrollToTurn, turns]);
 
   // Phase 1.4 — "New chat" button: drop the current thread and start
   // fresh. The next ``startTurn`` will have ``conversation_id=null``

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import type { DashboardItem } from "@/lib/api";
 import type { ChartKind, Insight } from "@/lib/types";
@@ -123,6 +124,27 @@ export function DashboardCard({
           </details>
         )}
       </div>
+      {item.source_thread_id && (
+        // Phase 2.2 — back-link to the conversation that produced this
+        // card. ``source_turn_index`` is included when known so the
+        // chat panel can scroll the right turn into view. Lives
+        // OUTSIDE the scrollable body so it's always visible even on
+        // tall cards. Hidden when there's no provenance (a future
+        // "ad-hoc card" path could write rows with both columns NULL).
+        <footer className="border-t border-(--color-border) bg-(--color-bg) px-3 py-1 text-right">
+          <Link
+            href={`/?conversation=${encodeURIComponent(item.source_thread_id)}${
+              item.source_turn_index
+                ? `&turn=${item.source_turn_index}`
+                : ""
+            }`}
+            className="text-xs text-(--color-muted) hover:underline"
+            data-testid="view-source-chat-link"
+          >
+            View source chat →
+          </Link>
+        </footer>
+      )}
     </div>
   );
 }

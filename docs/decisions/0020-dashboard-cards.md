@@ -1,6 +1,6 @@
-# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1 + 2.1.1)
+# ADR 0020: Dashboard cards — snapshot model + storage (Phase 2.1 + 2.1.1 + 2.2)
 
-> Status: Accepted · Date: 2026-06 (Phase 2.1 backend → Phase 2.1.1 FE) · Supersedes: none
+> Status: Accepted · Date: 2026-06 (Phase 2.1 backend → 2.1.1 FE → 2.2 back-link) · Supersedes: none
 
 ## Context
 
@@ -17,7 +17,7 @@ without screenshots. After Phase 2.1 they pick the three turns,
 add them to a "Q3 Sales Brief" dashboard, drag-arrange, and that
 dashboard URL becomes the artifact.
 
-This decision shipped in two commits:
+This decision shipped in three commits:
 
 * **Phase 2.1** (backend) — DDL + service + 7 endpoints + ADR.
 * **Phase 2.1.1** (FE) — Route Handler proxies, an "📌 Add to dashboard"
@@ -25,6 +25,13 @@ This decision shipped in two commits:
   `/dashboards/[id]` detail page that hosts a `react-grid-layout`
   12-column grid (drag, resize, inline rename, delete). FE notes are
   recorded in §"Phase 2.1.1 — Frontend additions" below.
+* **Phase 2.2** (back-link) — every card grows a "View source chat →"
+  footer link that deep-links into `/?conversation=<id>&turn=<n>`.
+  The chat panel reads those params at the server boundary and
+  auto-loads the conversation + scrolls the matching turn into
+  view. Closes the analyst's loop: "this card looks off → jump back
+  to the original chat and ask a follow-up". Notes in
+  §"Phase 2.2 — Back-link to source chat" below.
 
 ## Decision
 
@@ -286,6 +293,94 @@ breaking schema change.
 grid) so the ~5 KB stylesheet doesn't ship to the chat page.
 Bundle delta on `/dashboards/[id]`: ~21 KB first-load JS
 (verified via `next build` summary).
+
+## Phase 2.2 — Back-link to source chat
+
+### Why this matters
+
+ADR 0020 §1 deliberately kept `source_thread_id` + `source_turn_index`
+on every `dashboard_items` row even though the snapshot is fully
+self-contained at render time. Phase 2.2 cashes that decision in:
+the columns become the back-link target for an "Open this card's
+source conversation, scrolled to the turn that produced it" affordance.
+
+This closes the analyst's loop. Without the back-link, a card on a
+dashboard is a write-only artefact — the analyst can stare at it
+but can't easily ask "wait, what was the question that produced
+this 13?". With it, two clicks (the link, then any follow-up
+question) get them back to live investigation in the original
+conversation.
+
+### Wire format: `/?conversation=<id>&turn=<n>`
+
+A plain query-param deep-link, parsed at the server boundary in
+`app/page.tsx`. Rejected alternatives:
+
+* **A bespoke `/chat/<thread_id>?turn=<n>` route** — would require
+  splitting the chat panel into a route group and threading the
+  thread_id through layout. Not worth a second route when the chat
+  page IS the only page.
+* **POST with conversation_id in the body** — links must be GET
+  (so users can share a dashboard URL with a teammate and the
+  back-link still works in their browser). A query param is the
+  canonical web pattern for "deep-link state on a single page".
+
+### Server vs client parsing
+
+Next.js 15 gives two routes for reading query params in App Router:
+
+| | server (`searchParams` prop) | client (`useSearchParams` hook) |
+|---|---|---|
+| Suspense wrapping | none needed | required, or static rendering bails |
+| Where the value lands | a server prop, passed down as plain JS | a hook reading from the URL on the client |
+| Cost | the page becomes ƒ (dynamic) instead of ○ (static) | the page stays static, hook reads on hydrate |
+
+We picked **server**. The chat page was already going to be
+dynamic the moment any per-request thinking landed (it's never
+been worth statically pre-rendering an empty chat shell). Reading
+on the server keeps the client component prop interface clean
+(`initialConversationId: string | null`) and avoids the awkward
+`<Suspense>` wrapper that `useSearchParams` would force.
+
+Build-output verification: `/` moves from `○` (static) to `ƒ`
+(dynamic) with a +0.18 KB size delta. Acceptable.
+
+### Deterministic turn IDs
+
+Pre-Phase 2.2, `loadSavedConversation` minted random replay IDs
+(`replay-${Math.random()...}`). That made it impossible to locate
+a specific turn's DOM node from outside the panel. Phase 2.2
+switches to `replay-<1-based-index>`, matching the `turn_index`
+we already write into each replayed `AskResponse.turn_index` AND
+the `source_turn_index` we store on dashboard cards. One scheme,
+three places.
+
+The deep-link scroll then becomes a one-liner:
+
+```ts
+document.querySelector(`[data-turn-id="replay-${pendingScrollToTurn}"]`)
+  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+```
+
+### React 19 strict-mode double-mount guard
+
+The auto-load effect uses a `useRef(false)` latch (`deepLinkLoadedRef`)
+to ensure the load fires exactly once. Without the latch, strict-mode
+double-render in dev would issue two `GET /conversations/{id}/messages`
+requests on every navigation — harmless but noisy.
+
+### Edge cases handled
+
+* **Source conversation deleted from LangGraph.** `loadConversation`
+  returns 404 → the existing `console.error` path catches; the chat
+  panel stays empty. No crash.
+* **Target turn doesn't exist** (e.g. the conversation was truncated
+  by compaction). The scroll effect's `querySelector` returns null;
+  we just clear the pending target and the page lands at the top.
+  No error UI; the user sees they're in the right conversation but
+  not at the right turn.
+* **`turn` param missing or non-numeric.** `Number.parseInt(..., 10)`
+  returns NaN; we coerce to null and skip the scroll. No error.
 
 ## Risks and known limitations
 

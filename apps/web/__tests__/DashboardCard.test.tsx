@@ -103,4 +103,44 @@ describe("DashboardCard", () => {
       screen.getByText("There are 11 customers in Germany."),
     ).toBeInTheDocument();
   });
+
+  it("renders a 'View source chat' link with conversation + turn query params when provenance is set", () => {
+    render(
+      <DashboardCard
+        item={_item({ source_thread_id: "abc-123", source_turn_index: 3 })}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const link = screen.getByTestId("view-source-chat-link");
+    expect(link).toHaveAttribute(
+      "href",
+      "/?conversation=abc-123&turn=3",
+    );
+  });
+
+  it("omits the turn query param when turn_index is missing", () => {
+    render(
+      <DashboardCard
+        item={_item({ source_thread_id: "abc-123", source_turn_index: null })}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const link = screen.getByTestId("view-source-chat-link");
+    expect(link).toHaveAttribute("href", "/?conversation=abc-123");
+  });
+
+  it("hides the link entirely when source_thread_id is null (ad-hoc card)", () => {
+    render(
+      <DashboardCard
+        item={_item({ source_thread_id: null, source_turn_index: null })}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByTestId("view-source-chat-link"),
+    ).not.toBeInTheDocument();
+  });
 });
