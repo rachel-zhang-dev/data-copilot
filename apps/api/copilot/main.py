@@ -47,6 +47,16 @@ from copilot.checkpointer import (
 )
 from copilot.config import get_settings
 from copilot.db import dispose_engine, get_engine, get_schema_ddl
+from copilot.dashboards import (
+    add_item as dashboard_add_item,
+    create_dashboard,
+    delete_dashboard,
+    delete_item as dashboard_delete_item,
+    get_dashboard,
+    list_dashboards,
+    update_dashboard,
+    update_item as dashboard_update_item,
+)
 from copilot.saved import (
     add_previews_async,
     first_question_async,
@@ -395,6 +405,177 @@ async def replay_conversation_endpoint(thread_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"thread_id": thread_id, "messages": messages}
+
+
+# ---------------------------------------------------------------------------
+# Dashboards (Phase 2.1 / ADR 0020)
+# ---------------------------------------------------------------------------
+
+
+class DashboardRequest(BaseModel):
+    """Body for ``POST /dashboards`` and ``PATCH /dashboards/{id}``.
+
+    Both fields optional on PATCH; ``title`` required on POST (we
+    validate that explicitly in the handler so PATCH stays partial-
+    update friendly)."""
+
+    title: str | None = None
+    description: str | None = None
+
+
+class DashboardItemRequest(BaseModel):
+    """Body for ``POST /dashboards/{id}/items``.
+
+    The FE sends the full assistant-turn snapshot directly — chart
+    spec / insight / rows live on the live ``AskResponse`` and never
+    re-enter LangGraph's persisted ``dialogue``, so the only place
+    that has the complete payload is the browser at extract time.
+    Carrying the snapshot over the wire matches that reality.
+
+    Fields outside the snapshot (``title`` / position / size) are
+    optional with sensible defaults; the backend never re-runs the
+    SQL to populate them.
+    """
+
+    title: str
+    sql: str | None = None
+    answer: str | None = None
+    chart_kind: str | None = None
+    chart_spec: dict[str, Any] | None = None
+    rows: list[dict[str, Any]] | None = None
+    row_count: int | None = None
+    insight: dict[str, Any] | None = None
+    source_thread_id: str | None = None
+    source_turn_index: int | None = None
+    position_x: int = 0
+    position_y: int = 0
+    width: int = 4
+    height: int = 3
+
+
+class DashboardItemPatch(BaseModel):
+    """Body for ``PATCH /dashboards/{did}/items/{iid}``.
+
+    Snapshot columns are deliberately absent — the FE can rename a
+    card and drag it around, but it can't accidentally rewrite the
+    card's data. Re-extracting from a fresh turn is the supported
+    "change the underlying snapshot" path.
+    """
+
+    title: str | None = None
+    position_x: int | None = None
+    position_y: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+@app.post("/dashboards")
+async def create_dashboard_endpoint(req: DashboardRequest) -> dict[str, Any]:
+    """Create a new (empty) dashboard."""
+    if not req.title or not req.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    return create_dashboard(title=req.title.strip(), description=req.description)
+
+
+@app.get("/dashboards")
+async def list_dashboards_endpoint() -> dict[str, Any]:
+    """List dashboards newest-touched-first, with per-row item_count
+    so the sidebar / index page can render rich tiles without a
+    second round-trip."""
+    return {"items": list_dashboards()}
+
+
+@app.get("/dashboards/{dashboard_id}")
+async def get_dashboard_endpoint(dashboard_id: str) -> dict[str, Any]:
+    """Return one dashboard + its items in render order. 404 when
+    the dashboard does not exist."""
+    try:
+        return get_dashboard(dashboard_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/dashboards/{dashboard_id}")
+async def update_dashboard_endpoint(
+    dashboard_id: str, req: DashboardRequest
+) -> dict[str, Any]:
+    """Edit title / description. Fields left as ``None`` are
+    preserved; ``updated_at`` is bumped so the list reflects the
+    recent edit."""
+    try:
+        return update_dashboard(
+            dashboard_id,
+            title=req.title,
+            description=req.description,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/dashboards/{dashboard_id}")
+async def delete_dashboard_endpoint(dashboard_id: str) -> dict[str, bool]:
+    """Cascade-delete dashboard + every item on it."""
+    removed = delete_dashboard(dashboard_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"deleted": True}
+
+
+@app.post("/dashboards/{dashboard_id}/items")
+async def add_dashboard_item_endpoint(
+    dashboard_id: str, req: DashboardItemRequest
+) -> dict[str, Any]:
+    """Add a card to a dashboard from a FE-supplied snapshot.
+
+    Why FE-supplied: the assistant turn's full payload (chart_spec /
+    insight / rows) only ever exists on the live ``AskResponse`` —
+    LangGraph's persisted ``dialogue`` keeps only ``role / content /
+    sql / row_count`` per Turn. So at extract time, the FE has the
+    only complete copy. Posting the snapshot over the wire matches
+    that reality and keeps the backend completely free of any
+    LangGraph state read in the dashboard path.
+    """
+    try:
+        return dashboard_add_item(
+            dashboard_id,
+            snapshot=req.model_dump(),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/dashboards/{dashboard_id}/items/{item_id}")
+async def update_dashboard_item_endpoint(
+    dashboard_id: str,  # noqa: ARG001 — kept for URL shape; lookup is by item_id
+    item_id: str,
+    req: DashboardItemPatch,
+) -> dict[str, Any]:
+    """Rename + reposition + resize a card. Snapshot data is
+    immutable through this surface — re-extract from a fresh turn
+    to update the underlying answer."""
+    try:
+        return dashboard_update_item(
+            item_id,
+            title=req.title,
+            position_x=req.position_x,
+            position_y=req.position_y,
+            width=req.width,
+            height=req.height,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/dashboards/{dashboard_id}/items/{item_id}")
+async def delete_dashboard_item_endpoint(
+    dashboard_id: str,  # noqa: ARG001 — URL shape only
+    item_id: str,
+) -> dict[str, bool]:
+    """Remove a card. 404 when the item doesn't exist."""
+    removed = dashboard_delete_item(item_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"deleted": True}
 
 
 @app.get("/admin/stats", tags=["observability"])
