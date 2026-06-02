@@ -9,7 +9,7 @@
 #   fly secrets set -a data-copilot-web \
 #     API_BASE_URL=https://data-copilot-api.fly.dev
 
-app = "data-copilot-web"
+app = "data-copilot-rz-web"
 primary_region = "iad"
 
 [build]

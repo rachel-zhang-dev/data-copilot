@@ -254,6 +254,36 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---------- Phase 3.2: deploy-side defence (ADR 0024) ----------
+    demo_api_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional shared-secret gate on the LLM-expensive endpoints "
+            "(``/ask``, ``/ask/stream``, ``/mcp``, ``/dashboards``, "
+            "``/conversations``). When set, requests MUST carry "
+            "``X-API-Key: <value>``; missing or wrong key returns 401. "
+            "Unset (the default) leaves every endpoint open — fine for "
+            "local dev where the chat UI talks to the API on localhost. "
+            "REQUIRED for public deploys: without it, a leaked URL means "
+            "a leaked DeepSeek bill. The Next.js front-end's Route "
+            "Handlers forward the key server-side so browser users never "
+            "see it. Generate one with: ``openssl rand -hex 32``."
+        ),
+    )
+    rate_limit_per_minute: int = Field(
+        default=30,
+        ge=0,
+        le=10_000,
+        description=(
+            "Per-IP request budget for the expensive endpoints in a 60s "
+            "sliding window. 30/min is generous for a single human user "
+            "and tight enough to cap a runaway script. ``0`` disables "
+            "the limit entirely. The limiter runs in-process; if you "
+            "scale to multiple replicas you'll get N * the limit, which "
+            "is fine — DeepSeek + Fly spending caps are the real backstop."
+        ),
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

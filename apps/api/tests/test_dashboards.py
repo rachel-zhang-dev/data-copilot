@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from copilot.dashboards import _row_to_item, snapshot_from_replay_turn
 
-
 # ---------------------------------------------------------------------------
 # _row_to_item — defensive JSONB coercion
 # ---------------------------------------------------------------------------

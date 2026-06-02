@@ -315,7 +315,7 @@ async def state_preview_async(
     try:
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         snapshot = await sql_graph.aget_state(config)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("state_preview_async: aget_state failed for %s: %s", thread_id, exc)
         return {"last_question": None, "last_answer": None, "turn_count": 0}
     values = getattr(snapshot, "values", None) or {}
@@ -389,7 +389,7 @@ async def replay_conversation_async(
             "role": role,
             "content": str(turn.get("content", "")),
         }
-        if "sql" in turn and turn["sql"]:
+        if turn.get("sql"):
             entry["sql"] = str(turn["sql"])
         if "row_count" in turn and turn["row_count"] is not None:
             entry["row_count"] = int(turn["row_count"])

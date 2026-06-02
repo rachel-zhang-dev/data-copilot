@@ -14,7 +14,7 @@
 #     CORS_ORIGINS=https://data-copilot-web.fly.dev \
 #     REDIS_URL=rediss://...
 
-app = "data-copilot-api"
+app = "data-copilot-rz-api"
 primary_region = "iad"
 
 [build]

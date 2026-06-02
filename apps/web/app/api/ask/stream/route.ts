@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 /**
  * SSE proxy. Pipes the FastAPI ``/ask/stream`` body through Next.js'
@@ -18,14 +19,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const apiBase = process.env.API_BASE_URL ?? "http://localhost:8000";
   const body = await req.text();
 
   let upstream: Response;
   try {
-    upstream = await fetch(`${apiBase}/ask/stream`, {
+    upstream = await fetch(`${getApiBase()}/ask/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: serverHeaders({ "content-type": "application/json" }),
       body,
       // Disable Node's default response buffering for SSE.
       // @ts-expect-error — Node-only option ignored by other runtimes.

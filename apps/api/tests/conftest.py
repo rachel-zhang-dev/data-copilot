@@ -24,6 +24,13 @@ os.environ.setdefault(
     "postgresql://copilot:copilot_dev_pwd@localhost:5432/northwind",
 )
 os.environ.setdefault("LANGSMITH_TRACING", "false")
+# Phase 3.2 / ADR 0024 — disable the per-IP rate limiter for the
+# whole test suite. Several existing tests (test_api_ask, test_streaming)
+# hammer ``/ask`` / ``/ask/stream`` from the same TestClient IP and
+# would otherwise trip the 30/min cap. Individual tests that DO want
+# to exercise the limiter (test_security.py) monkeypatch the setting
+# back to a small value + call ``security.reset_for_tests``.
+os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "0")
 
 
 class StubMessage:

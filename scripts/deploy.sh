@@ -20,8 +20,13 @@ set -euo pipefail
 
 cmd="${1:-help}"
 
-API_APP="data-copilot-api"
-WEB_APP="data-copilot-web"
+# App names are globally unique on Fly. The original
+# ``data-copilot-{api,web}`` names were taken by a prior deploy on a
+# different account; this project's account uses the ``-rz-`` prefix.
+# If you fork, ``sed -i s/data-copilot-rz/data-copilot-<your-handle>/g``
+# on this file + both ``fly.toml`` + this README before deploying.
+API_APP="data-copilot-rz-api"
+WEB_APP="data-copilot-rz-web"
 
 deploy_api() {
   echo ">> deploying ${API_APP}"

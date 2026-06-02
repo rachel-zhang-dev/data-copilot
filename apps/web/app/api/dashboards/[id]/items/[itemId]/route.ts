@@ -7,8 +7,7 @@
  * outside title / position_x / position_y / width / height.
  */
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function PATCH(
   req: NextRequest,
@@ -17,10 +16,10 @@ export async function PATCH(
   const { id, itemId } = await context.params;
   const body = await req.text();
   const upstream = await fetch(
-    `${API_BASE}/dashboards/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`,
+    `${getApiBase()}/dashboards/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`,
     {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: serverHeaders({ "content-type": "application/json" }),
       body,
     },
   );
@@ -39,8 +38,8 @@ export async function DELETE(
 ): Promise<NextResponse> {
   const { id, itemId } = await context.params;
   const upstream = await fetch(
-    `${API_BASE}/dashboards/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`,
-    { method: "DELETE" },
+    `${getApiBase()}/dashboards/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}`,
+    { method: "DELETE", headers: serverHeaders() },
   );
   const text = await upstream.text();
   return new NextResponse(text, {

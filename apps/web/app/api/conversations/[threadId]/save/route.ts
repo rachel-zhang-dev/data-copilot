@@ -5,8 +5,7 @@
  * Phase 1.4 / ADR 0019. Same proxy pattern as ``app/api/ask/route.ts``.
  */
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function POST(
   req: NextRequest,
@@ -15,10 +14,10 @@ export async function POST(
   const { threadId } = await context.params;
   const body = await req.text();
   const upstream = await fetch(
-    `${API_BASE}/conversations/${encodeURIComponent(threadId)}/save`,
+    `${getApiBase()}/conversations/${encodeURIComponent(threadId)}/save`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: serverHeaders({ "content-type": "application/json" }),
       body,
     },
   );
@@ -37,8 +36,8 @@ export async function DELETE(
 ): Promise<NextResponse> {
   const { threadId } = await context.params;
   const upstream = await fetch(
-    `${API_BASE}/conversations/${encodeURIComponent(threadId)}/save`,
-    { method: "DELETE" },
+    `${getApiBase()}/conversations/${encodeURIComponent(threadId)}/save`,
+    { method: "DELETE", headers: serverHeaders() },
   );
   const text = await upstream.text();
   return new NextResponse(text, {

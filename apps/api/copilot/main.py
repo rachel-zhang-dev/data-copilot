@@ -71,6 +71,7 @@ from copilot.saved import (
     save_conversation,
     unsave_conversation,
 )
+from copilot.security import security_middleware
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +181,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 log.info("CORS allow_origins=%s", _cors_origins)
+
+# Phase 3.2 / ADR 0024 — API-key gate + per-IP rate limiter. Both
+# disabled by default for local dev (env vars unset); set DEMO_API_KEY
+# and / or RATE_LIMIT_PER_MINUTE on a public deploy. See
+# ``docs/deployment-security.md`` for the threat model and the
+# DeepSeek / Fly spending-cap settings the middleware does NOT
+# replace (those are the hard backstop).
+app.middleware("http")(security_middleware)
+_settings = get_settings()
+if _settings.demo_api_key:
+    log.info("security: DEMO_API_KEY gate ENABLED")
+if _settings.rate_limit_per_minute > 0:
+    log.info(
+        "security: rate limit %d/min/IP on /ask, /ask/stream, /mcp/*",
+        _settings.rate_limit_per_minute,
+    )
 
 
 # Prometheus metrics (week 11). Instrumentator hooks into FastAPI's

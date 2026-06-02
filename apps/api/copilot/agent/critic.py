@@ -216,7 +216,7 @@ def critique_sql_node(state: AgentState) -> dict[str, Any]:
                 HumanMessage(content=user_msg),
             ]
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("critique_sql: LLM call failed (%s); fail-open", exc)
         return {"critic": _ok_verdict("critic LLM unavailable")}
 
@@ -260,7 +260,6 @@ def route_after_critic(state: AgentState) -> str:
     ``route_after_execute`` handle the same conversion."""
     # Lazy import to avoid the prompts → critic → nodes → critic
     # cycle that would arise if we hoisted these to the top.
-    from copilot.agent.nodes import can_retry
 
     critic = state.get("critic") or {}
     verdict = critic.get("verdict", "ok")

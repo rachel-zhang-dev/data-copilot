@@ -8,11 +8,13 @@
  * single origin so no CORS preflight is needed.
  */
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function GET(): Promise<NextResponse> {
-  const upstream = await fetch(`${API_BASE}/dashboards`, { cache: "no-store" });
+  const upstream = await fetch(`${getApiBase()}/dashboards`, {
+    cache: "no-store",
+    headers: serverHeaders(),
+  });
   const text = await upstream.text();
   return new NextResponse(text, {
     status: upstream.status,
@@ -24,9 +26,9 @@ export async function GET(): Promise<NextResponse> {
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = await req.text();
-  const upstream = await fetch(`${API_BASE}/dashboards`, {
+  const upstream = await fetch(`${getApiBase()}/dashboards`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: serverHeaders({ "content-type": "application/json" }),
     body,
   });
   const text = await upstream.text();

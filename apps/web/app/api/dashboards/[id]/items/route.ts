@@ -7,8 +7,7 @@
  * Phase 2.1.1 / ADR 0020. Dumb passthrough.
  */
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function POST(
   req: NextRequest,
@@ -17,10 +16,10 @@ export async function POST(
   const { id } = await context.params;
   const body = await req.text();
   const upstream = await fetch(
-    `${API_BASE}/dashboards/${encodeURIComponent(id)}/items`,
+    `${getApiBase()}/dashboards/${encodeURIComponent(id)}/items`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: serverHeaders({ "content-type": "application/json" }),
       body,
     },
   );

@@ -7,16 +7,16 @@
  * ``API_BASE_URL`` doesn't leak to the browser.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function GET(
   _req: NextRequest,
   context: { params: Promise<{ threadId: string }> },
 ): Promise<NextResponse> {
-  const apiBase = process.env.API_BASE_URL ?? "http://localhost:8000";
   const { threadId } = await context.params;
   const upstream = await fetch(
-    `${apiBase}/conversations/${encodeURIComponent(threadId)}/messages`,
-    { cache: "no-store" },
+    `${getApiBase()}/conversations/${encodeURIComponent(threadId)}/messages`,
+    { cache: "no-store", headers: serverHeaders() },
   );
   const text = await upstream.text();
   return new NextResponse(text, {

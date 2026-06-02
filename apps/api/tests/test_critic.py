@@ -22,7 +22,6 @@ import json
 from typing import Any
 
 import pytest
-
 from copilot.agent import critic as critic_mod
 from copilot.agent import feature_flags
 from copilot.agent.critic import (
@@ -33,7 +32,6 @@ from copilot.agent.critic import (
     route_after_critic,
 )
 from copilot.agent.state import Attempt
-
 
 # ---------------------------------------------------------------------------
 # parse_critic_verdict

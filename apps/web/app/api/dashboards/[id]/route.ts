@@ -6,8 +6,7 @@
  * Phase 2.1.1 / ADR 0020. Same dumb-proxy pattern as the rest.
  */
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 async function forward(
   upstream: Promise<Response>,
@@ -28,8 +27,9 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await context.params;
   return forward(
-    fetch(`${API_BASE}/dashboards/${encodeURIComponent(id)}`, {
+    fetch(`${getApiBase()}/dashboards/${encodeURIComponent(id)}`, {
       cache: "no-store",
+      headers: serverHeaders(),
     }),
   );
 }
@@ -41,9 +41,9 @@ export async function PATCH(
   const { id } = await context.params;
   const body = await req.text();
   return forward(
-    fetch(`${API_BASE}/dashboards/${encodeURIComponent(id)}`, {
+    fetch(`${getApiBase()}/dashboards/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: serverHeaders({ "content-type": "application/json" }),
       body,
     }),
   );
@@ -55,8 +55,9 @@ export async function DELETE(
 ): Promise<NextResponse> {
   const { id } = await context.params;
   return forward(
-    fetch(`${API_BASE}/dashboards/${encodeURIComponent(id)}`, {
+    fetch(`${getApiBase()}/dashboards/${encodeURIComponent(id)}`, {
       method: "DELETE",
+      headers: serverHeaders(),
     }),
   );
 }

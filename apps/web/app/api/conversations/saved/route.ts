@@ -8,11 +8,12 @@
  * client bundle.
  */
 import { NextResponse } from "next/server";
+import { getApiBase, serverHeaders } from "@/lib/server-fetch";
 
 export async function GET(): Promise<NextResponse> {
-  const apiBase = process.env.API_BASE_URL ?? "http://localhost:8000";
-  const upstream = await fetch(`${apiBase}/conversations/saved`, {
+  const upstream = await fetch(`${getApiBase()}/conversations/saved`, {
     cache: "no-store",
+    headers: serverHeaders(),
   });
   const text = await upstream.text();
   return new NextResponse(text, {

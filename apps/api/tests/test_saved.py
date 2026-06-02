@@ -9,12 +9,11 @@ engine.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from copilot import saved
 from copilot.saved import (
     SavedConversation,
     add_previews_async,
@@ -23,7 +22,6 @@ from copilot.saved import (
     replay_conversation_async,
     state_preview_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # derive_title — the zero-friction auto-title heuristic
@@ -215,15 +213,15 @@ async def test_replay_async_raises_on_no_dialogue() -> None:
 
 
 def test_saved_conversation_dataclass_is_frozen() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     sc = SavedConversation(
         thread_id="t1",
         title="x",
         tags=(),
         notes=None,
-        pinned_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        pinned_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     # frozen dataclass: mutation raises
     with pytest.raises(Exception):

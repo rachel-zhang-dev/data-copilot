@@ -336,7 +336,6 @@ def test_analyst_node_scrubs_drill_when_budget_exhausted() -> None:
     later refuse it. Belt-and-suspenders — the AskResponse payload
     shouldn't claim a drill-down that never happened."""
     from copilot.agents.analyst import analyst_node
-    from copilot.agents.analyst import nodes as analyst_nodes
 
     stub_llm = MagicMock()
     stub_llm.invoke = MagicMock(
