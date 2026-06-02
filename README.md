@@ -1,13 +1,13 @@
 # Data Copilot
 
-> Text-to-SQL agent that **knows what it knows** — refuses gracefully when the schema can't answer, spots outliers + trends in every result, chains multi-step queries on "why" questions, saves the good conversations to a sidebar drawer, and lets you grid them into dashboards. Built on LangGraph + FastAPI + Next.js, deployed on Fly.io.
+> Text-to-SQL agent that **knows what it knows** — refuses gracefully when the schema can't answer, spots outliers + trends in every result, chains multi-step queries on "why" questions, saves the good conversations to a sidebar drawer, and lets you grid them into dashboards. Built on LangGraph + FastAPI + Next.js, Fly.io-ready (`./scripts/deploy.sh all` once secrets are set).
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-636%20passing-brightgreen.svg)](#testing)
 [![ADRs](https://img.shields.io/badge/ADRs-24-blue.svg)](docs/decisions/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-🔗 **[Live demo](https://data-copilot-web.fly.dev)** &nbsp;·&nbsp;
+🚀 **[Run in 60 seconds](#run-in-60-seconds)** &nbsp;·&nbsp;
 🎬 **[2-min walkthrough](docs/demo.gif)** &nbsp;·&nbsp;
 📐 **[Architecture](docs/architecture.md)** &nbsp;·&nbsp;
 📋 **[ADRs](docs/decisions/)** &nbsp;·&nbsp;
