@@ -48,6 +48,7 @@ dependencies = [
 
     # ---------- Deployment & observability (week 11) ----------
     "prometheus-fastapi-instrumentator>=7.0.0",  # /metrics endpoint
+    "opentelemetry-api>=1.27.0",                 # W3C TraceContext helpers (no SDK yet)
     "redis>=5.0.0",                              # optional Redis-backed cache
 
     # ---------- MCP server (Phase 3.0 / ADR 0022) ----------

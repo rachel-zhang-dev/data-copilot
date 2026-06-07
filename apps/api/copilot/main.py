@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
+import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -63,6 +64,11 @@ from copilot.dashboards import (
     update_item as dashboard_update_item,
 )
 from copilot.db import dispose_engine, get_engine, get_schema_ddl
+from copilot.observability import (
+    log_context,
+    request_id_middleware,
+    setup_logging,
+)
 from copilot.saved import (
     add_previews_async,
     first_question_async,
@@ -72,6 +78,11 @@ from copilot.saved import (
     unsave_conversation,
 )
 from copilot.security import security_middleware
+
+# Configure structured logging at module load — must happen before any
+# ``log.info(...)`` call further down (CORS / security middleware both
+# emit module-level logs). ``setup_logging`` is idempotent.
+setup_logging()
 
 log = logging.getLogger(__name__)
 
@@ -181,6 +192,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 log.info("CORS allow_origins=%s", _cors_origins)
+
+# W3 observability: bind W3C TraceContext (trace_id / span_id /
+# request_id) to ``structlog.contextvars`` for the lifetime of every
+# request. Registered AFTER CORS (so preflight OPTIONS still get a
+# trace) and BEFORE ``security_middleware`` so 401 / 429 responses
+# carry a traceparent header too.
+app.middleware("http")(request_id_middleware)
 
 # Phase 3.2 / ADR 0024 — API-key gate + per-IP rate limiter. Both
 # disabled by default for local dev (env vars unset); set DEMO_API_KEY
@@ -871,42 +889,47 @@ async def ask(req: AskRequest, debug: bool = False) -> AskResponse:
     # conversation_id and thread_id as synonyms.
     config: dict[str, Any] = {"configurable": {"thread_id": conversation_id}}
 
-    # Resume requests must target a thread that is actually paused.
-    # We probe the SQL Specialist's checkpointer (the only one with
-    # persisted state) up front so a stray resume call gets a crisp
-    # 400 instead of a confusing no-op run.
-    if req.resume is not None:
-        snapshot = await sql_graph.aget_state(config)
-        if not getattr(snapshot, "interrupts", None):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "no pending confirmation on this conversation; pass a "
-                    "question instead of resume to start a new turn"
-                ),
+    # W3 observability: enrich every log line emitted during this turn
+    # (including from every LangGraph node) with the conversation_id so
+    # downstream tooling can ``grep`` / ``jq`` a single dialogue.
+    with log_context(conversation_id=conversation_id):
+        # Resume requests must target a thread that is actually paused.
+        # We probe the SQL Specialist's checkpointer (the only one with
+        # persisted state) up front so a stray resume call gets a crisp
+        # 400 instead of a confusing no-op run.
+        if req.resume is not None:
+            snapshot = await sql_graph.aget_state(config)
+            if not getattr(snapshot, "interrupts", None):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "no pending confirmation on this conversation; pass "
+                        "a question instead of resume to start a new turn"
+                    ),
+                )
+
+        # Serialise concurrent writes to the same conversation_id.
+        # Without this guard, two near-simultaneous /ask calls on the
+        # same thread both read the same baseline and the later commit
+        # silently overwrites the earlier turn's diff. Different
+        # conversation_ids use different lock keys and stay fully
+        # parallel.
+        async with conversation_lock(conversation_id):
+            supervisor_state = await supervisor.ainvoke(
+                {
+                    "question": req.question,
+                    "conversation_id": conversation_id,
+                    "resume": req.resume,
+                    "debug": debug,
+                    "hop_count": 0,
+                    "drill_downs": [],
+                },
+                config=config,
             )
 
-    # Serialise concurrent writes to the same conversation_id. Without
-    # this guard, two near-simultaneous /ask calls on the same thread
-    # both read the same baseline and the later commit silently
-    # overwrites the earlier turn's diff. Different conversation_ids
-    # use different lock keys and stay fully parallel.
-    async with conversation_lock(conversation_id):
-        supervisor_state = await supervisor.ainvoke(
-            {
-                "question": req.question,
-                "conversation_id": conversation_id,
-                "resume": req.resume,
-                "debug": debug,
-                "hop_count": 0,
-                "drill_downs": [],
-            },
-            config=config,
+        return _build_response_from_supervisor(
+            supervisor_state, conversation_id=conversation_id, debug=debug
         )
-
-    return _build_response_from_supervisor(
-        supervisor_state, conversation_id=conversation_id, debug=debug
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1030,12 @@ async def _stream_ask(
     socket.
     """
     interrupted = False
+    # W3 observability: enrich every log line emitted during this turn
+    # (including from every LangGraph node activation) with the
+    # conversation_id so a single dialogue can be sliced out of the log
+    # stream. No teardown needed — this generator runs inside Starlette's
+    # per-request asyncio task whose ``contextvars`` copy dies with it.
+    structlog.contextvars.bind_contextvars(conversation_id=conversation_id)
     try:
         async with conversation_lock(conversation_id):
             stream = graph.astream(
