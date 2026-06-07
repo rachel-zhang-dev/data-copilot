@@ -24,6 +24,7 @@ container won't start" — much easier to debug.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -173,14 +174,41 @@ class SemanticModel(BaseModel):
 
 
 def _default_yaml_path() -> Path:
-    """Resolve ``data/semantic.yml`` relative to the repo root.
+    """Resolve ``data/semantic.yml`` across host and container layouts.
 
-    This module sits at ``apps/api/copilot/semantic/models.py``, so the
-    repo root is four parents up. Computing the path lets ``copilot``
-    be importable from any CWD (tests, eval, mcp_server) without
-    relying on ``os.getcwd()``.
+    Two deployment topologies exist and the path layout differs:
+
+    * **Repo / dev**: this module is at ``apps/api/copilot/semantic/models.py``;
+      the YAML sits four parents up at ``<repo>/data/semantic.yml``.
+    * **Container**: the Dockerfile flattens to ``/app/copilot/semantic/models.py``
+      and copies ``data/`` to ``/app/data/`` (two parents up).
+
+    Hard-coding ``parents[4]`` worked for the repo but raised
+    ``IndexError`` inside the container — a real outage caught by W3
+    structured logging on 2026-06-07.
+
+    Resolution order:
+
+    1. ``SEMANTIC_YAML_PATH`` env var — explicit override for ops.
+    2. Walk up from ``__file__`` looking for ``data/semantic.yml``.
+       Stops at the first hit so layout depth doesn't matter.
+    3. Fall back to ``parents[4]`` (the original repo-root assumption)
+       — only meaningful in the dev tree; if it doesn't exist the
+       caller's ``FileNotFoundError`` path takes over.
     """
-    return Path(__file__).resolve().parents[4] / "data" / "semantic.yml"
+    override = os.environ.get("SEMANTIC_YAML_PATH")
+    if override:
+        return Path(override)
+
+    here = Path(__file__).resolve()
+    for ancestor in here.parents:
+        candidate = ancestor / "data" / "semantic.yml"
+        if candidate.is_file():
+            return candidate
+
+    parents = here.parents
+    fallback_root = parents[4] if len(parents) >= 5 else parents[-1]
+    return fallback_root / "data" / "semantic.yml"
 
 
 def load_semantic_model(path: Path | None = None) -> SemanticModel:

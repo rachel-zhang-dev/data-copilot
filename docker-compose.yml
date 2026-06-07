@@ -62,6 +62,11 @@ services:
     environment:
       # Inside the compose network the DB hostname is the service name.
       DATABASE_URL: postgresql://${POSTGRES_USER:-copilot}:${POSTGRES_PASSWORD:-copilot_dev_pwd}@postgres:5432/${POSTGRES_DB:-northwind}
+      # ``APP_ENV`` flips the structlog renderer (development=Console,
+      # production=JSON). Default keeps local logs human-readable;
+      # override in ``.env`` to test the prod path.
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:?SILICONFLOW_API_KEY is required}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}

@@ -201,6 +201,38 @@ for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     lg.propagate = True
 ```
 
+### 坑 4：JSON 模式下 traceback 只剩 `<traceback object at 0x...>`
+
+验证阶段切到 `APP_ENV=production` 抓 traceback，结果异常字段长这样：
+
+```json
+"exc_info": [
+  "<class 'IndexError'>",
+  "IndexError(4)",
+  "<traceback object at 0xffff8429d280>"
+]
+```
+
+类型和值能看，**但调用栈是 repr 出来的内存地址**，毫无用处。
+
+**原因**：坑 1 里为了 ConsoleRenderer 的 Rich 渲染，删掉了 `format_exc_info`。**问题是 `JSONRenderer` 自己不会展开 traceback object**——它只会 `repr()` 一下。两个 renderer 对 `exc_info` 的需求**完全相反**：
+
+| Renderer | 期望 exc_info 形状 | 怎么实现 |
+|---|---|---|
+| `ConsoleRenderer` | **原始 tuple** `(type, value, tb)`，自己用 Rich 渲染 | 链里**不放** `format_exc_info` |
+| `JSONRenderer` | **结构化 dict**（frames + locals + chain） | 链里**放** `dict_tracebacks` |
+
+**修复**：让 `shared_processors` 按 renderer 自适应：
+
+```python
+if is_prod:
+    shared_processors.append(structlog.processors.dict_tracebacks)
+```
+
+`dict_tracebacks` 比 `format_exc_info` 更适合 JSON —— 它把整个 exception chain（含 `__cause__` / `__context__`）展开成 frame 数组，每帧带 `filename` / `lineno` / `name` / `locals`。后面接 Loki / ELK 时**直接按字段索引**就能跳到出错代码行。
+
+**教训**：选 processor 不要"装上就完"，要跟 renderer 配对验证。最快的方式 —— **写一个会抛异常的端点跑一次**，看 JSON / Console 两边都打印对。
+
 ---
 
 ## 六、验收
@@ -213,6 +245,9 @@ for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
 | stdlib bridge（第三方库日志结构化） | ✅ |
 | JSON 模式（生产配置） | ✅ |
 | W3C `traceparent` 解析 + 生成 | ✅ |
+| **JSON 模式下 traceback 可机读**（坑 4 修复） | ✅ |
+| `conversation_id` 渗透到 LangGraph 节点 + 第三方库日志 | ✅ |
+| **抓到一条真生产 bug**（七.5 章节） | ✅ |
 | Ruff lint（含 import 排序） | ✅ |
 | Mypy strict | ✅ |
 | **现有测试套件 577/577** | ✅ |
@@ -248,6 +283,55 @@ curl -v \
 ```
 
 W4 接 Loki 后这些查询全部变成 LogQL，shape 一模一样，只是数据持久化 + 全文加速。
+
+---
+
+## 七.5、实战回报：W3 当天就抓到一条生产 bug
+
+写完 W3 验证清单跑 `/ask` 时，返回 `Internal Server Error` —— 但**所有的诊断时间都花在分析，不是花在找问题**。这就是结构化日志的意义。
+
+### 发现链
+
+| 步骤 | 没有 W3 时 | 有 W3 时 |
+|---|---|---|
+| 1. 发现 500 | 看到 `Internal Server Error` 字符串 | 同上 |
+| 2. 找异常类型 | 翻几屏 Rich traceback | `jq 'select(.level=="error") \| .exception[0].exc_type'` → `IndexError` |
+| 3. 找异常值 | 继续翻屏 | `... .exc_value` → `4` |
+| 4. 找崩点 | 在 Rich panel 里数缩进、找用户代码 | `... .exception[0].frames[] \| select(.filename \| contains("copilot/")) \| "\(.filename):\(.lineno) \(.name)"` → 7 行用户栈帧一行一个 |
+| 5. 找触发条件 | 不知道哪次请求触发 | `grep conversation_id=c-w3-json4` 把同次请求的 9 条业务日志全捞出来 |
+
+**5 分钟定位到根因。** 没有 W3 同样的 bug 至少要花 30 分钟，而且大概率"试着重启再说"。
+
+### 抓到的 bug 是真的
+
+```
+IndexError(4)
+  /app/copilot/semantic/models.py:183  _default_yaml_path
+  /app/copilot/semantic/models.py:226  get_semantic_model
+  /app/copilot/agent/semantic_node.py:105  metric_router_node
+```
+
+三个独立缺陷叠加触发：
+
+1. **路径硬编码越界**（`models.py:183`）：`Path(__file__).parents[4]` 假设源码在 `apps/api/copilot/semantic/`（4 层），但 Docker 镜像 flatten 到 `/app/copilot/semantic/`（2 层），`parents[4]` 越界
+2. **资源没进镜像**（`Dockerfile` + `.dockerignore`）：`data/semantic.yml` 被 `.dockerignore` 排除，Dockerfile 也没 COPY，**运行时根本不存在**
+3. **异常捕获过窄**（`semantic_node.py:104`）：`except (FileNotFoundError, ValueError)` 接不住 `IndexError`，于是直接冒泡到 ASGI
+
+后两个错误**单独存在**问题都不大（路径错了能 catch，文件没了能 fallback），但是**叠在一起**互相掩护：路径解析失败被升级成了未捕获异常，绕过了所有降级路径。
+
+### 修复策略
+
+| 缺陷 | 修复 |
+|---|---|
+| 硬编码 `parents[4]` | 改成从 `__file__` 向上 walk 找 `data/semantic.yml`，加 `SEMANTIC_YAML_PATH` env 兜底 |
+| `data/` 被 dockerignore 屏蔽 | `.dockerignore` 加 `!data/semantic.yml` 例外 + Dockerfile 显式 `COPY` |
+| `except` 过窄 | 拓宽到 `except Exception` —— 语义层是 optimization 不是 critical path，**任何**加载失败都该降级到 SQL writer，不该让请求失败 |
+
+### 顺便修了 W3 自己的一个漏洞
+
+排查过程发现 JSON 模式下 `exc_info` 只有 `<traceback object at 0xff...>`（坑 4），证明**之前的"W3 已完成"其实留了一个 prod-mode 不可观测的盲区**。补上 `dict_tracebacks` 后 traceback 才能机器解析。
+
+**真实结论**：W3 的验收清单（六.4 那张表）原本只验证了 dev mode 输出 —— **生产模式应该走一遍真异常**才算完。这条加进 W4+ 的验收模板。
 
 ---
 

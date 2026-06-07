@@ -62,11 +62,14 @@ def setup_logging() -> None:
 
     # Enrichment that runs regardless of whether the log came from
     # structlog directly or via the stdlib bridge.
-    # Note: we deliberately omit ``format_exc_info`` here — modern
-    # ConsoleRenderer / JSONRenderer pretty-print ``exc_info`` natively,
-    # and including ``format_exc_info`` upstream stringifies the
-    # exception too early, breaking that. ``StackInfoRenderer`` is kept
-    # so ``log.info("...", stack_info=True)`` still works.
+    #
+    # Exception formatting is renderer-specific:
+    #   * ConsoleRenderer renders ``exc_info`` natively (Rich panel) — we
+    #     pass the live tuple straight through.
+    #   * JSONRenderer cannot serialise traceback objects on its own, so
+    #     we attach ``dict_tracebacks`` to flatten ``exc_info`` into a
+    #     structured ``exception`` field (frames + locals) before
+    #     JSON encoding.
     shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -74,6 +77,8 @@ def setup_logging() -> None:
         structlog.processors.StackInfoRenderer(),
         _redact_secrets,
     ]
+    if is_prod:
+        shared_processors.append(structlog.processors.dict_tracebacks)
 
     renderer: Processor = (
         structlog.processors.JSONRenderer()

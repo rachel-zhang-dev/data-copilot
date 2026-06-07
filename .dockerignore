@@ -39,6 +39,10 @@ apps/web/coverage
 
 # Big things the runtime image never needs
 data/
+# …but the semantic layer YAML is a runtime config the API needs.
+# Keeping the rest of ``data/`` excluded (seed SQL, fixtures, big
+# eval CSVs) so the image stays slim.
+!data/semantic.yml
 notebooks/
 docs/
 docs/eval/*.md

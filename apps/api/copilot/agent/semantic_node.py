@@ -103,8 +103,19 @@ def metric_router_node(state: AgentState) -> dict[str, Any]:
 
     try:
         model = get_semantic_model()
-    except (FileNotFoundError, ValueError) as exc:
-        log.warning("metric_router: semantic.yml unavailable (%s); fallback", exc)
+    except Exception as exc:
+        # Broader than ``(FileNotFoundError, ValueError)`` on purpose:
+        # the semantic layer is an optimisation, not the critical path,
+        # so *any* loader hiccup (e.g. an unexpected layout that breaks
+        # path resolution, or a transient FS error) should degrade to
+        # the SQL writer rather than 500 the whole request. The 2026-06
+        # outage was an ``IndexError`` from a too-deep ``parents[]``
+        # walk that slipped past the old narrow filter.
+        log.warning(
+            "metric_router: semantic.yml unavailable (%s: %s); fallback",
+            type(exc).__name__,
+            exc,
+        )
         return {"semantic": _fallback_envelope("semantic model unavailable")}
 
     menu = format_menu(model)

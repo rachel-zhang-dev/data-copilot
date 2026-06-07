@@ -50,6 +50,11 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app apps/api/copilot ./copilot
+# Semantic layer needs ``data/semantic.yml`` at runtime; ship it next to
+# the package so ``_default_yaml_path`` finds it via the ancestor walk
+# (``/app/data/semantic.yml``). Override per-deploy with
+# ``SEMANTIC_YAML_PATH``.
+COPY --chown=app:app data/semantic.yml ./data/semantic.yml
 
 USER app
 
